@@ -9,25 +9,38 @@ Windows only for now.
 
 - **Runs.** A run takes a ticket through a workflow's steps:
   - An agent step starts an Agent SDK session in the ticket's worktree and goes on when it succeeds. Its result is
-    available to later steps as `steps.<id>.output`.
+    available to later steps as `steps.<id>.output`, in text or as JSON fields when the step asks for them.
+  - A condition takes its `yes` or its `no` branch from an expression such as
+    `steps.triage.output.risky and steps.triage.output.severity == "high"`.
+  - A For each takes every item of a list through its steps, one at a time or a few in parallel, and stops or goes
+    on when an item fails.
+  - An action does one thing in another tool (a Jira comment or status change, a Slack message) through a small
+    agent that has the MCP server for it.
   - An approval step waits until someone approves it. Rejecting it can send the run back to an earlier step
     (`onReject`), with the reason passed to the agent.
   - An agent whose policy asks before a tool call waits for an answer. The answer goes back to the agent.
   - Closing or crashing the app marks running jobs **Interrupted**. Approval steps keep waiting. Retry resumes the
     agent's session where it stopped.
   - Each workflow has a limit on how many runs it can have at once, and a run keeps the workflow it started with.
+  - A run has a **board**: notes its agents post for later steps (`post_note`) and read (`read_notes`), through
+    tools the agent host serves itself. You read and post on it from Runs or from Tracket, and a rejection's reason
+    lands there for the step that redoes the work. A workflow can turn its board off, and an agent type can be
+    kept to reading it.
 - **Screens**, laid out like the mockup (canvas "Task & Agent Tracker", page V2) in Tracket's look:
   - Overview: counters, "Waiting on you" (approve, or reject with a reason), runs with their step dots, the agents
     at work and the recent events.
   - Runs: three resizable panes:
     - the run list, with filters;
-    - the run's steps as a graph, with the arrow back to the step a rejection returns to;
-    - the selected step's details: status, attempts, approvals, output, a timestamped log, Retry or Resume, and the
-      agent session.
+    - the run's steps as a graph: the branch a condition took, a loop's items and how many are done, the arrow back
+      to the step a rejection returns to;
+    - the selected step's details: status, its loop items, attempts, approvals, output and JSON output, a
+      timestamped log, Retry or Resume, and the agent session.
 
     Above them sit Cancel run, Open in Jira and Run again, and a run can be started by hand.
-  - Workflows: an editor. Add agent and approval steps, then set each one in the inspector: its name, agent type,
-    input, instructions, what an approval shows and where a rejection goes. Steps can be moved and deleted, and you
+  - Workflows: an editor drawn like the canvas: a condition's `no` branch in a column on the right, a loop's steps
+    in a dashed frame. Add agent steps, conditions, loops, approvals and actions, then set each one in the
+    inspector: its name, agent type, input, instructions, JSON output fields, an expression, the items of a loop and
+    how many at once, what an approval shows and where a rejection goes, what an action does. Steps can be moved and deleted, and you
     can edit the workflow's name, description and run limit. New, Save, Discard and Delete are there too. Save checks
     the workflow with the same rules as loading, and writes nothing when it fails.
   - Agents: an editor for the shared agent types: model, tools, MCP servers, when to ask a human, instructions and
@@ -44,7 +57,8 @@ Windows only for now.
   | --- | --- |
   | `GET /v1/health` | Version and the agent host's state |
   | `GET /v1/workflows?offered=true` | Workflows offered in Tracket |
-  | `GET /v1/runs?ticket=SIS-244` | Runs (of a ticket), newest first, with jobs and pending approvals |
+  | `GET /v1/runs?ticket=SIS-244` | Runs (of a ticket), newest first, with jobs, pending approvals and the board's notes |
+  | `POST /v1/runs/{id}/notes` | `{body, to?, by}`: a person's note on the run's board; 201 with the note |
   | `POST /v1/runs` | `{workflow, ticket: {key, title, url}, folder, startedBy}`; 201 with the run, 409 at the workflow's limit |
   | `POST /v1/approvals/{id}` | `{decision: "approve" or "reject", reason?, by?}`; 409 if already decided |
   | `POST /v1/runs/{id}/cancel?by=` | Stops the agents and expires the approvals |
@@ -93,6 +107,7 @@ Environment variables:
 | --- | --- |
 | `SPROCKET_PORT` | Port of the local API (default 47821) |
 | `SPROCKET_VIEW` | Debug builds only: the screen to open on (`runs`, `workflows`…) |
+| `SPROCKET_DATA_DIR` | Debug builds only: another data folder (database, workflows, agent types), to try things apart from the real ones |
 | `SPROCKET_CLAUDE_PATH` | The `claude.exe` the agents use (default: `%USERPROFILE%\.local\bin\claude.exe`, then the `PATH`) |
 
 ## Third-party notices

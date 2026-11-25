@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::workflow::AskPolicy;
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 3;
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +17,17 @@ pub struct AgentSpec {
     /// MCP servers allowed; empty removes every MCP tool from the session
     pub mcp: Vec<String>,
     pub instructions: Option<String>,
+    pub board: BoardAccess,
+}
+
+/// What an agent can do with its run's board.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardAccess {
+    /// The workflow has no board: no board tools at all
+    Off,
+    Read,
+    Post,
 }
 
 /// Core → host.
@@ -24,13 +35,16 @@ pub struct AgentSpec {
 #[serde(tag = "type")]
 pub enum CoreMessage {
     #[serde(rename = "job.start", rename_all = "camelCase")]
-    JobStart { job_id: String, cwd: String, prompt: String, agent: AgentSpec },
+    JobStart { job_id: String, cwd: String, prompt: String, agent: AgentSpec, output_schema: Option<Value> },
     #[serde(rename = "job.resume", rename_all = "camelCase")]
-    JobResume { job_id: String, cwd: String, sdk_session_id: String, prompt: String, agent: AgentSpec },
+    JobResume { job_id: String, cwd: String, sdk_session_id: String, prompt: String, agent: AgentSpec, output_schema: Option<Value> },
     #[serde(rename = "job.stop", rename_all = "camelCase")]
     JobStop { job_id: String },
     #[serde(rename = "tool.answer", rename_all = "camelCase")]
     ToolAnswer { ask_id: String, behavior: Behavior, message: Option<String> },
+    /// The answer to a board request: text for the agent, or why it failed
+    #[serde(rename = "board.answer", rename_all = "camelCase")]
+    BoardAnswer { request_id: String, text: String, error: bool },
 }
 
 #[derive(Serialize, Debug, Clone, Copy)]
@@ -59,9 +73,18 @@ pub enum HostMessage {
         output: Option<String>,
         cost_usd: Option<f64>,
         error: Option<String>,
+        /// The JSON output, when the step asked for one
+        #[serde(default)]
+        data: Option<Value>,
     },
     #[serde(rename = "tool.ask", rename_all = "camelCase")]
     ToolAsk { ask_id: String, job_id: String, tool_name: String, input: Value },
+    /// An agent posts a note to its run's board, for everyone or for someone (`to`)
+    #[serde(rename = "board.post", rename_all = "camelCase")]
+    BoardPost { request_id: String, job_id: String, message: String, to: Option<String> },
+    /// An agent reads its run's board, from after note `since`
+    #[serde(rename = "board.read", rename_all = "camelCase")]
+    BoardRead { request_id: String, job_id: String, since: Option<i64> },
 }
 
 #[cfg(test)]
@@ -87,8 +110,8 @@ mod tests {
             serde_json::to_string(&answer).unwrap(),
             r#"{"type":"tool.answer","askId":"a","behavior":"deny","message":null}"#
         );
-        let spec = AgentSpec { model: "m".into(), ask: AskPolicy::BeforeWrites, tools: vec![], mcp: vec![], instructions: None };
-        let start = CoreMessage::JobStart { job_id: "j".into(), cwd: "c".into(), prompt: "p".into(), agent: spec };
+        let spec = AgentSpec { model: "m".into(), ask: AskPolicy::BeforeWrites, tools: vec![], mcp: vec![], instructions: None, board: BoardAccess::Post };
+        let start = CoreMessage::JobStart { job_id: "j".into(), cwd: "c".into(), prompt: "p".into(), agent: spec, output_schema: None };
         assert!(serde_json::to_string(&start).unwrap().contains(r#""ask":"before-writes""#));
     }
 }

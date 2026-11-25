@@ -1,11 +1,14 @@
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
-import { FlowGraph, workflowFlow, type FlowNode } from '@/components/FlowGraph'
+import { FlowGraph } from '@/components/FlowGraph'
+import { designSub, workflowFlow, type FlowNode } from '@/lib/flow'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { type AppError, type Run, type RunState } from '@/lib/api'
 import { duration, when } from '@/lib/format'
+import { currentJobs, findPlace, stepState } from '@/lib/steps'
 import { JobPanel, RunEndsPanel } from './JobPanel'
 import { RunFacts, RunHeader } from './RunHeader'
+import { Board } from './Board'
 import { StartRunForm } from './StartRunForm'
 import { StateDot, stateLabel } from './StateBadge'
 import { useRuns } from './useRuns'
@@ -18,28 +21,52 @@ const FILTERS: { id: string; label: string; states: RunState[] | null }[] = [
   { id: 'passed', label: 'Passed', states: ['passed'] },
 ]
 
-/** The run's workflow as a graph, each node in the state of its step's latest job. */
+/** How many items the loops of a step have had, in the places they ran. */
+function itemCount(run: Run, loopId: string) {
+  return currentJobs(run, loopId).reduce((n, j) => n + (Array.isArray(j.data) ? j.data.length : 0), 0)
+}
+
+/** The run's workflow as a graph, each node in the state of its step's jobs. */
 function runFlow(run: Run) {
-  const flow = workflowFlow(run.steps, 'Tracket')
-  const stateOf = (node: FlowNode): FlowNode['state'] => {
-    if (node.id === '$trigger') return 'done'
-    if (node.id === '$end') return run.state === 'passed' ? 'done' : run.state === 'failed' || run.state === 'cancelled' ? run.state : 'pending'
-    return run.jobs.filter((j) => j.stepId === node.id).at(-1)?.state ?? 'pending'
-  }
-  const attempts = (id: string) => run.jobs.filter((j) => j.stepId === id).length
-  const nodes = flow.nodes.map((n) => ({
-    ...n,
-    sub: n.id === '$trigger' ? `Started by ${run.startedBy}` : n.id === '$end' ? 'Run passes' : n.sub,
-    state: stateOf(n),
-    badge: attempts(n.id) > 1 ? `×${attempts(n.id)}` : undefined,
-  }))
-  return { nodes, edges: flow.edges }
+  return workflowFlow(
+    run.steps,
+    'run',
+    (s) => {
+      const jobs = currentJobs(run, s.id)
+      const state = stepState(run, s.id)
+      const loop = findPlace(run.steps, s.id)?.loops.at(-1)
+      const attempts = run.jobs.filter((j) => j.stepId === s.id).length
+      const node: Partial<FlowNode> = { state, sub: designSub(s) }
+      if (s.kind === 'condition') {
+        const took = jobs.at(-1)?.output === 'then' ? 'then' : jobs.at(-1)?.output === 'else' ? 'else' : undefined
+        node.took = took
+        if (took) node.sub = `Took ${took === 'then' ? 'yes' : 'no'} · ${s.if}`
+      } else if (s.kind === 'forEach') {
+        const total = itemCount(run, s.id)
+        if (jobs.length) node.badge = `${total} item${total === 1 ? '' : 's'}`
+      } else if (loop) {
+        const total = itemCount(run, loop.id)
+        if (total) node.badge = `${jobs.filter((j) => j.state === 'done').length}/${total}`
+      } else if (attempts > 1) {
+        node.badge = `×${attempts}`
+      }
+      return node
+    },
+    {
+      trigger: { state: 'done', sub: `Started by ${run.startedBy}` },
+      end: {
+        sub: 'Run passes',
+        state: run.state === 'passed' ? 'done' : run.state === 'failed' || run.state === 'cancelled' ? run.state : 'pending',
+      },
+    },
+  )
 }
 
 /** The step to show first: the one that needs you, else the one running, else the last that ran. */
 function defaultNode(run: Run) {
   const waiting = run.approvals[0]?.jobId
-  const job = run.jobs.find((j) => j.id === waiting) ?? run.jobs.find((j) => j.state === 'running') ?? run.jobs.at(-1)
+  const current = run.jobs.filter((j) => !j.superseded)
+  const job = current.find((j) => j.id === waiting) ?? current.find((j) => j.state === 'running') ?? current.at(-1)
   return job?.stepId ?? '$trigger'
 }
 
@@ -93,6 +120,7 @@ export function RunsView() {
   const { selected, select } = useRunSelection()
   const [starting, setStarting] = useState(false)
   const [nodeByRun, setNodeByRun] = useState<Record<string, string>>({})
+  const [pane, setPane] = useState<'step' | 'board'>('step')
   const run = runs.find((r) => r.id === selected) ?? runs[0]
   const node = run ? (nodeByRun[run.id] ?? defaultNode(run)) : undefined
 
@@ -133,18 +161,33 @@ export function RunsView() {
               <div className="flex h-full flex-col gap-4 px-6 py-5">
                 <RunFacts run={run} />
                 <div className="ct-canvas min-h-0 flex-1 overflow-auto rounded-[10px] border border-ct-border">
-                  <FlowGraph mode="run" {...runFlow(run)} selected={node} onSelect={(id) => setNodeByRun((m) => ({ ...m, [run.id]: id }))} />
+                  <FlowGraph mode="run" flow={runFlow(run)} selected={node} onSelect={(id) => {
+                      setNodeByRun((m) => ({ ...m, [run.id]: id }))
+                      setPane('step')
+                    }} />
                 </div>
               </div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id="runs-job" defaultSize="28%" minSize="20%">
-              <aside aria-label="Step details" className="h-full overflow-y-auto bg-ct-surface px-4 py-[18px]">
-                {node === '$trigger' || node === '$end' ? (
-                  <RunEndsPanel run={run} which={node === '$trigger' ? 'trigger' : 'end'} />
-                ) : (
-                  <JobPanel key={`${run.id}-${node}`} run={run} stepId={node!} />
-                )}
+              <aside aria-label={pane === 'board' ? 'Board' : 'Step details'} className="flex h-full flex-col overflow-y-auto bg-ct-surface px-4 py-[18px]">
+                <div role="group" aria-label="Show" className="mb-4 flex gap-1.5">
+                  <button type="button" className="ct-chip" aria-pressed={pane === 'step'} onClick={() => setPane('step')}>
+                    Step
+                  </button>
+                  <button type="button" className="ct-chip" aria-pressed={pane === 'board'} onClick={() => setPane('board')}>
+                    Board{run.notes.length ? ` · ${run.notes.length}` : ''}
+                  </button>
+                </div>
+                <div className="flex-1">
+                  {pane === 'board' ? (
+                    <Board run={run} enabled={run.board} />
+                  ) : node === '$trigger' || node === '$end' ? (
+                    <RunEndsPanel run={run} which={node === '$trigger' ? 'trigger' : 'end'} />
+                  ) : (
+                    <JobPanel key={`${run.id}-${node}`} run={run} stepId={node!} />
+                  )}
+                </div>
               </aside>
             </ResizablePanel>
           </>

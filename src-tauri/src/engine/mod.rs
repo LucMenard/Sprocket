@@ -1,11 +1,13 @@
-//! The workflow engine. It walks a run through its workflow's steps:
-//! - an agent step starts a job on the agent host and moves on when the job succeeds;
+//! The workflow engine. It walks a run through its workflow's steps (see steps.rs for how):
+//! - an agent or action step starts a job on the agent host and moves on when the job succeeds;
 //! - an approval step opens a gate that waits, for hours if need be, for someone to decide;
+//! - a condition takes one branch, a loop takes its items through its steps, a few at a time;
 //! - a tool ask (an agent asking before a tool call) waits for an answer that goes back to the host.
 //!
 //! All state is in SQLite and every change also writes an activity row, so the app can restart
 //! (or the host crash) without losing track: gates survive, running jobs come back Interrupted.
 
+mod board;
 mod steps;
 mod views;
 #[cfg(test)]
@@ -20,7 +22,8 @@ use crate::db::{Db, NOW};
 use crate::error::{AppError, Result};
 use crate::host::protocol::{Behavior, CoreMessage, HostMessage};
 use crate::workflow;
-use steps::{load_run, Out};
+use steps::{load_run, Ended, Out};
+pub use board::NoteView;
 pub use views::{ActivityView, McpServers, RunView, TicketRef};
 
 /// Where the engine's effects go: the agent host, and the UI that shows runs.
@@ -133,8 +136,7 @@ impl Engine {
                     req.folder, req.started_by],
             )?;
             steps::activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, req.started_by))?;
-            let run = load_run(conn, &id)?;
-            steps::start_step(conn, &run, 0, None, out)?;
+            steps::drive(conn, &id, out)?;
             Ok(id)
         })?;
         self.run(&run_id)
@@ -159,7 +161,6 @@ impl Engine {
                 params![approval_id, state, reason, by],
             )?;
             steps::activity(conn, &run_id, job_id.as_deref(), &format!("{kind}.{state}"), &match &reason { Some(r) => format!("{by}: {r}"), None => by.to_string() })?;
-            let run = load_run(conn, &run_id)?;
             let job_id = job_id.unwrap_or_default();
 
             if kind == "tool" {
@@ -172,21 +173,31 @@ impl Engine {
                 return steps::refresh_waiting(conn, &run_id);
             }
 
-            let step_id: String = conn.query_row("SELECT step_id FROM jobs WHERE id = ?1", [&job_id], |r| r.get(0))?;
-            let index = steps::step_index(&run.wf, &step_id)?;
+            // A run stopped elsewhere (an interrupted loop item) can't go on from here: resume it first.
+            // Returning the error rolls the whole decision back.
+            let run = load_run(conn, &run_id)?;
+            if !steps::is_active(&run.state) {
+                return Err(AppError::new("conflict", format!("The run is {}: resume it before deciding", run.state)));
+            }
+            let gate = steps::job(conn, &job_id)?.ok_or_else(|| AppError::new("notFound", "No such job"))?;
             if approve {
-                steps::end_job(conn, &job_id, "done", reason.as_deref(), None, None)?;
-                return steps::advance(conn, &run, index, out);
+                steps::end_job(conn, &job_id, Ended { output: reason.as_deref(), ..Ended::new("done") })?;
+            } else {
+                steps::end_job(conn, &job_id, Ended { error: reason.as_deref(), ..Ended::new("rejected") })?;
+                board::note_rejection(conn, &run, &gate, by, reason.as_deref())?;
+                let feedback = reason.unwrap_or_else(|| "Rejected without a reason".into());
+                steps::send_back(conn, &run, &gate, feedback, out)?;
             }
-            steps::end_job(conn, &job_id, "rejected", None, reason.as_deref(), None)?;
-            match &run.wf.steps[index].on_reject {
-                Some(target) => {
-                    let target = steps::step_index(&run.wf, target)?;
-                    let feedback = reason.unwrap_or_else(|| "Rejected without a reason".into());
-                    steps::start_step(conn, &run, target, Some(feedback), out)
-                }
-                None => steps::set_run_state(conn, &run_id, "failed"),
-            }
+            steps::drive(conn, &run_id, out)
+        })
+    }
+
+    /// A person's note on a run's board, for everyone or for someone (`to`: a step or an agent type).
+    pub fn post_note(&self, run_id: &str, by: &str, body: &str, to: Option<&str>) -> Result<NoteView> {
+        self.change(|conn, _| {
+            board::person_may_post(conn, run_id)?;
+            let id = board::post(conn, run_id, board::NewNote { job_id: None, author: by, agent: None, to, body })?;
+            Ok(board::notes(conn, run_id, Some(id - 1))?.remove(0))
         })
     }
 
@@ -196,7 +207,7 @@ impl Engine {
             if !steps::is_active(&run.state) && run.state != "interrupted" {
                 return Err(AppError::new("conflict", format!("The run is already {}", run.state)));
             }
-            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind = 'agent' AND state IN ('running', 'waiting')")?;
+            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action') AND state IN ('running', 'waiting')")?;
             let running: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
             for job_id in running {
                 out.messages.push(CoreMessage::JobStop { job_id });
@@ -214,19 +225,13 @@ impl Engine {
     /// Runs a failed or interrupted step again. An agent resumes its session when it has one.
     pub fn retry_job(&self, job_id: &str) -> Result<()> {
         self.change(|conn, out| {
-            let (run_id, step_id, state, session): (String, String, String, Option<String>) = conn
-                .query_row("SELECT run_id, step_id, state, sdk_session_id FROM jobs WHERE id = ?1", [job_id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })
-                .optional()?
-                .ok_or_else(|| AppError::new("notFound", "No such job"))?;
-            let run = load_run(conn, &run_id)?;
-            if !matches!(state.as_str(), "failed" | "interrupted") || !matches!(run.state.as_str(), "failed" | "interrupted") {
+            let job = steps::job(conn, job_id)?.ok_or_else(|| AppError::new("notFound", "No such job"))?;
+            let run = load_run(conn, &job.run_id)?;
+            let retryable = matches!(job.state.as_str(), "failed" | "interrupted" | "rejected") && !job.superseded;
+            if !retryable || !matches!(run.state.as_str(), "failed" | "interrupted") {
                 return Err(AppError::new("conflict", "Only a failed or interrupted step of a stopped run can be retried"));
             }
-            let index = steps::step_index(&run.wf, &step_id)?;
-            steps::activity(conn, &run_id, Some(job_id), "job.retried", &step_id)?;
-            steps::start_step_resuming(conn, &run, index, session, out)
+            steps::retry(conn, &run, &job, out)
         })
     }
 

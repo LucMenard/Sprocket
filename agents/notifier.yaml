@@ -1,0 +1,8 @@
+description: Does one action in another tool, such as a Jira comment, a status change or a Slack message.
+model: claude-haiku-5-5
+ask: before-writes
+tools:
+- ToolSearch
+mcp:
+- Atlassian2
+instructions: You do exactly the one action you are asked, word for word, and nothing else.

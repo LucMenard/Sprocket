@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The examples written into a new agents folder, the same agents as the example workflow's.
-const EXAMPLES: [(&str, &str); 2] = [
+const EXAMPLES: [(&str, &str); 3] = [
     ("planner.yaml", include_str!("../../agents/planner.yaml")),
     ("builder.yaml", include_str!("../../agents/builder.yaml")),
+    ("notifier.yaml", include_str!("../../agents/notifier.yaml")),
 ];
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
@@ -36,6 +37,17 @@ pub struct FileAgent {
     pub mcp: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    /// Whether it may post to its run's board; it can always read it. Yes when left out
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub board: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 /// An agent type as the rest of the app sees it.
@@ -51,6 +63,9 @@ pub struct AgentType {
     #[serde(default)]
     pub mcp: Vec<String>,
     pub instructions: Option<String>,
+    /// May post to the run's board (it can always read it)
+    #[serde(default = "yes")]
+    pub board: bool,
     /// True for a shared agent type (agents/<id>.yaml), false for one defined in a workflow file
     #[serde(default)]
     pub shared: bool,
@@ -66,6 +81,7 @@ impl AgentType {
             tools: a.tools,
             mcp: a.mcp,
             instructions: a.instructions,
+            board: a.board,
             shared,
         }
     }
@@ -78,6 +94,7 @@ impl AgentType {
             tools: self.tools.clone(),
             mcp: self.mcp.clone(),
             instructions: self.instructions.clone().filter(|i| !i.trim().is_empty()),
+            board: self.board,
         }
     }
 }

@@ -2,10 +2,13 @@
 // sent to the core as tool asks.
 import { randomUUID } from 'node:crypto'
 import { query, type CanUseTool, type HookCallback, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentSpec, CoreMessage, HostMessage } from './protocol.ts'
+import { BOARD_SERVER, boardServer, BoardRequests, isBoardTool } from './board.ts'
+import type { AgentSpec, CoreMessage, HostMessage, JsonSchema } from './protocol.ts'
 
 /** Tools that only read: "before-writes" lets them through without asking. */
 const READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch', 'ToolSearch', 'TodoWrite'])
+/** How the agent hands over a JSON output: never worth asking about */
+const STRUCTURED_OUTPUT = 'StructuredOutput'
 /** MCP tools whose name says they only read: `mcp__Atlassian2__getJiraIssue`, `…__searchConfluence` */
 const MCP_READ = /^(get|list|search|read|fetch|find|query|lookup|discover|view|describe)|UserInfo$/i
 
@@ -24,7 +27,7 @@ export function isReadOnly(toolName: string): boolean {
 
 export function mcpAllowed(toolName: string, servers: string[]): boolean {
   const mcp = mcpParts(toolName)
-  return !mcp || servers.some((s) => normalize(s) === mcp.server)
+  return !mcp || mcp.server === BOARD_SERVER || servers.some((s) => normalize(s) === mcp.server)
 }
 
 export interface HostConfig {
@@ -38,20 +41,25 @@ type Send = (message: HostMessage) => void
 export class Jobs {
   private readonly running = new Map<string, AbortController>()
   private readonly asks = new Map<string, (result: PermissionResult) => void>()
+  private readonly board: BoardRequests
 
   constructor(
     private readonly config: HostConfig,
     private readonly send: Send,
-  ) {}
+  ) {
+    this.board = new BoardRequests(send)
+  }
 
   handle(message: CoreMessage) {
     switch (message.type) {
       case 'job.start':
-        return void this.run(message.jobId, message.cwd, message.prompt, message.agent)
+        return void this.run(message.jobId, message.cwd, message.prompt, message.agent, message.outputSchema)
       case 'job.resume':
-        return void this.run(message.jobId, message.cwd, message.prompt, message.agent, message.sdkSessionId)
+        return void this.run(message.jobId, message.cwd, message.prompt, message.agent, message.outputSchema, message.sdkSessionId)
       case 'job.stop':
         return this.running.get(message.jobId)?.abort()
+      case 'board.answer':
+        return this.board.answer(message.requestId, { text: message.text, error: message.error })
       case 'tool.answer': {
         const resolve = this.asks.get(message.askId)
         this.asks.delete(message.askId)
@@ -66,6 +74,7 @@ export class Jobs {
 
   /** Stops every job, for when the core goes away. */
   stopAll() {
+    this.board.failAll()
     for (const controller of this.running.values()) controller.abort()
   }
 
@@ -81,9 +90,9 @@ export class Jobs {
     })
   }
 
-  private options(jobId: string, cwd: string, agent: AgentSpec, abortController: AbortController, resume?: string): Options {
+  private options(jobId: string, cwd: string, agent: AgentSpec, abortController: AbortController, schema: JsonSchema | null, resume?: string): Options {
     const canUseTool: CanUseTool = async (toolName, input, { signal }) => {
-      if (agent.ask === 'never') return { behavior: 'allow', updatedInput: input }
+      if (agent.ask === 'never' || toolName === STRUCTURED_OUTPUT || isBoardTool(toolName)) return { behavior: 'allow', updatedInput: input }
       if (agent.ask === 'before-writes' && isReadOnly(toolName)) return { behavior: 'allow', updatedInput: input }
       return this.askCore(jobId, toolName, input, signal)
     }
@@ -101,7 +110,7 @@ export class Jobs {
           },
         }
       }
-      if (agent.ask === 'every-action') {
+      if (agent.ask === 'every-action' && toolName !== STRUCTURED_OUTPUT && !isBoardTool(toolName)) {
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
       }
       return {}
@@ -117,25 +126,28 @@ export class Jobs {
       model: agent.model,
       canUseTool,
       ...(agent.tools.length ? { tools: agent.tools } : {}),
-      // No MCP server listed: none of their tools is even loaded, which also saves their context
-      ...(agent.mcp.length ? {} : { disallowedTools: ['mcp__*'] }),
+      // The run's board is our own MCP server, in this process
+      ...(agent.board !== 'off' ? { mcpServers: { [BOARD_SERVER]: boardServer(jobId, agent.board, this.board) } } : {}),
+      // No MCP server listed: the user's aren't even loaded, which also saves their context
+      ...(agent.mcp.length ? {} : agent.board !== 'off' ? { strictMcpConfig: true } : { disallowedTools: ['mcp__*'] }),
       ...(agent.instructions
         ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: agent.instructions } }
         : {}),
       hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
+      ...(schema ? { outputFormat: { type: 'json_schema', schema } } : {}),
       ...(resume ? { resume } : {}),
       stderr: (line) => process.stderr.write(`[${jobId}] ${line}\n`),
     }
   }
 
-  private async run(jobId: string, cwd: string, prompt: string, agent: AgentSpec, resume?: string) {
+  private async run(jobId: string, cwd: string, prompt: string, agent: AgentSpec, schema: JsonSchema | null, resume?: string) {
     if (this.running.has(jobId)) return
     const abortController = new AbortController()
     this.running.set(jobId, abortController)
     let started = false
     let ended = false
     try {
-      for await (const message of query({ prompt, options: this.options(jobId, cwd, agent, abortController, resume) })) {
+      for await (const message of query({ prompt, options: this.options(jobId, cwd, agent, abortController, schema, resume) })) {
         if (!started && message.type === 'system' && message.subtype === 'init') {
           started = true
           this.send({ type: 'job.started', jobId, sdkSessionId: message.session_id })
@@ -150,6 +162,7 @@ export class Jobs {
             result: ok ? 'success' : 'error',
             output: ok ? message.result : null,
             costUsd: message.total_cost_usd,
+            ...(ok && message.structured_output !== undefined ? { data: message.structured_output } : {}),
             ...(ok ? {} : { error: message.subtype }),
           })
         }

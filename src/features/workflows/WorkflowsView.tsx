@@ -1,17 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { FlowGraph, KindIcon, KINDS, workflowFlow } from '@/components/FlowGraph'
+import { FlowGraph, KindIcon } from '@/components/FlowGraph'
+import { designSub, KINDS, workflowFlow } from '@/lib/flow'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { useAgents } from '@/features/agents/useAgents'
-import { api, type AgentType, type AppError, type Workflow } from '@/lib/api'
+import { api, type AgentType, type AppError, type StepKind, type Workflow } from '@/lib/api'
+import { allSteps, findPlace } from '@/lib/steps'
 import { useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
-const PALETTE = [
-  { kind: 'agent' as const, help: 'Hand work to an agent type' },
-  { kind: 'approval' as const, help: 'Pause until someone approves' },
-]
+const PALETTE: StepKind[] = ['agent', 'condition', 'forEach', 'approval', 'action']
 
 export function WorkflowsView() {
   const queryClient = useQueryClient()
@@ -27,7 +26,12 @@ export function WorkflowsView() {
   const draft = editing.draft
   const node = saved ? (nodeByWorkflow[saved.id] ?? draft?.steps[0]?.id ?? '$trigger') : '$trigger'
   const select = (id: string) => saved && setNodeByWorkflow((m) => ({ ...m, [saved.id]: id }))
-  const flow = draft ? workflowFlow(draft.steps, 'Tracket') : null
+  const flow = draft
+    ? workflowFlow(draft.steps, 'design', (s) => ({ sub: designSub(s) }), {
+        trigger: { sub: 'Manual, from a ticket' },
+        end: { sub: 'Mark the run as passed' },
+      })
+    : null
   // What a step can use: this workflow's own agent types first, then the shared ones
   const agents: AgentType[] = [...(saved?.agents.filter((a) => !a.shared) ?? []), ...shared.filter((a) => !saved?.agents.some((o) => !o.shared && o.id === a.id))]
 
@@ -135,7 +139,7 @@ export function WorkflowsView() {
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate font-semibold">{w.name}</span>
                     <span className="truncate text-xs text-ct-text-3">
-                      {w.steps.length} steps · {w.agents.length} agent types
+                      {allSteps(w.steps).length} steps · {w.agents.length} agent types
                     </span>
                   </span>
                 </button>
@@ -151,26 +155,31 @@ export function WorkflowsView() {
             {draft && (
               <div className="flex flex-col gap-2 border-t border-ct-border pt-3.5">
                 <span className="ct-eyebrow">Add a node</span>
-                {PALETTE.map((p) => (
+                {PALETTE.map((kind) => (
                   <button
-                    key={p.kind}
+                    key={kind}
                     type="button"
                     className="flex min-h-[52px] items-center gap-2.5 rounded-[10px] border border-ct-border bg-ct-surface px-2.5 py-2 text-left hover:bg-ct-subtle"
                     onClick={() => {
-                      // After the selected node: first after the trigger, last before the end
-                      const at = node === '$trigger' ? 0 : node === '$end' ? draft.steps.length : draft.steps.findIndex((s) => s.id === node) + 1
-                      const id = editing.addStep(p.kind, at, agents[0]?.id ?? null)
+                      // After the selected node, next to it: first after the trigger, last before the end
+                      const place = findPlace(draft.steps, node)
+                      const slot = place
+                        ? { parent: place.parent?.id ?? null, branch: place.branch, index: place.index + 1 }
+                        : { parent: null, branch: null, index: node === '$trigger' ? 0 : draft.steps.length }
+                      // An action is best done by an agent that has MCP servers
+                      const agent = kind === 'action' ? (agents.find((a) => a.mcp.length) ?? agents[0]) : agents[0]
+                      const id = editing.addStep(kind, slot, agent?.id ?? null)
                       if (id) select(id)
                     }}
                   >
-                    <KindIcon kind={p.kind} />
+                    <KindIcon kind={kind} />
                     <span className="flex flex-col gap-0.5">
-                      <span className="font-semibold">{KINDS[p.kind].label}</span>
-                      <span className="text-xs text-ct-text-3">{p.help}</span>
+                      <span className="font-semibold">{KINDS[kind].label}</span>
+                      <span className="text-xs text-ct-text-3">{KINDS[kind].help}</span>
                     </span>
                   </button>
                 ))}
-                <p className="text-xs text-ct-text-3">Added after the selected node. Condition, For each and Action come later.</p>
+                <p className="text-xs text-ct-text-3">Added after the selected node, in its branch or loop.</p>
               </div>
             )}
 
@@ -195,6 +204,13 @@ export function WorkflowsView() {
                     onChange={(e) => editing.setField('maxParallelRuns', Math.max(1, Number(e.target.value) || 1))}
                   />
                 </label>
+                <label className="flex cursor-pointer items-start gap-2.5">
+                  <input type="checkbox" className="mt-0.5 size-4" checked={draft.board} onChange={(e) => editing.setField('board', e.target.checked)} />
+                  <span className="flex flex-col gap-0.5">
+                    <span className="font-medium">Board</span>
+                    <span className="text-xs text-ct-text-3">Notes its agents and you share during a run</span>
+                  </span>
+                </label>
               </div>
             )}
           </aside>
@@ -205,7 +221,7 @@ export function WorkflowsView() {
             {flow && (
               <>
                 <div className="py-6">
-                  <FlowGraph mode="design" nodes={flow.nodes} edges={flow.edges} selected={node} onSelect={select} />
+                  <FlowGraph mode="design" flow={flow} selected={node} onSelect={select} />
                 </div>
                 <div className="ct-card sticky bottom-3.5 left-3.5 ml-3.5 inline-flex items-center gap-2 px-3 py-2 text-[13px]">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ct-pill-pass)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>

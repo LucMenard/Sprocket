@@ -57,6 +57,7 @@ const draftOf = (a: AgentType): AgentDraft => ({
   tools: [...a.tools],
   mcp: [...a.mcp],
   instructions: a.instructions ?? '',
+  board: a.board,
 })
 
 /** A shared agent type, editable; Save writes agents/<id>.yaml. */
@@ -136,6 +137,13 @@ export function AgentEditor({ agent, mcpServers, usedBy, onDeleted }: { agent: A
           <Toggles label="Tools" options={TOOLS} value={draft.tools} onChange={(v) => set('tools', v)} mono />
           <span className="text-xs text-ct-text-3">{draft.tools.length ? 'Only these.' : "None pressed: all of Claude Code's tools."}</span>
         </div>
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input type="checkbox" className="mt-0.5 size-4" checked={draft.board} onChange={(e) => set('board', e.target.checked)} />
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium">Posts to the run's board</span>
+            <span className="text-xs text-ct-text-3">It can always read the board, when its workflow has one.</span>
+          </span>
+        </label>
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-2 ct-label">Ask a human before</legend>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-2">

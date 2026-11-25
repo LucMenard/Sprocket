@@ -28,6 +28,12 @@ pub struct JobView {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub has_session: bool,
+    /// Where it ran: `""` for the workflow itself, `each[2]/` for the third item of the loop `each`
+    pub scope: String,
+    /// Redone since (after a rejection or a retry): kept for the history only
+    pub superseded: bool,
+    /// The JSON output of a step that asked for one; a loop's items
+    pub data: Option<Value>,
     /// What happened to the job, oldest first: started, tool asks and answers, done or failed
     pub log: Vec<LogLine>,
 }
@@ -70,7 +76,7 @@ pub struct McpServers {
     pub servers: Vec<McpServerView>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalView {
     pub id: String,
@@ -97,10 +103,14 @@ pub struct RunView {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub steps: Vec<Step>,
+    /// Whether its workflow has a board
+    pub board: bool,
     /// Oldest first; a step done twice (retried, or sent back by a rejection) has two
     pub jobs: Vec<JobView>,
     /// Only the pending ones
     pub approvals: Vec<ApprovalView>,
+    /// The run's board, oldest first
+    pub notes: Vec<super::board::NoteView>,
     pub cost_usd: f64,
 }
 
@@ -120,17 +130,19 @@ fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
         state: r.get(10)?,
         started_at: r.get(11)?,
         ended_at: r.get(12)?,
+        board: wf.as_ref().is_none_or(|w| w.board),
         steps: wf.map(|w| w.steps).unwrap_or_default(),
         jobs: Vec::new(),
         approvals: Vec::new(),
+        notes: Vec::new(),
         cost_usd: 0.0,
     })
 }
 
 fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
     let mut jobs = conn.prepare(
-        "SELECT id, step_id, kind, state, attempt, output, error, cost_usd, started_at, ended_at, sdk_session_id IS NOT NULL
-         FROM jobs WHERE run_id = ?1 ORDER BY started_at, rowid",
+        "SELECT id, step_id, kind, state, attempt, output, error, cost_usd, started_at, ended_at, sdk_session_id IS NOT NULL,
+         scope, superseded, data FROM jobs WHERE run_id = ?1 ORDER BY rowid",
     )?;
     run.jobs = jobs
         .query_map([&run.id], |r| {
@@ -146,6 +158,9 @@ fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
                 started_at: r.get(8)?,
                 ended_at: r.get(9)?,
                 has_session: r.get(10)?,
+                scope: r.get(11)?,
+                superseded: r.get(12)?,
+                data: r.get::<_, Option<String>>(13)?.and_then(|d| serde_json::from_str(&d).ok()),
                 log: Vec::new(),
             })
         })?
@@ -157,6 +172,7 @@ fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
             .collect::<rusqlite::Result<_>>()?;
     }
     run.cost_usd = run.jobs.iter().filter_map(|j| j.cost_usd).sum();
+    run.notes = super::board::notes(conn, &run.id, None)?;
 
     let mut approvals = conn.prepare(
         "SELECT id, kind, job_id, summary, tool_name, input, created_at FROM approvals

@@ -36,17 +36,24 @@ These come from the mockup, so the code, the UI and this document use the same n
 
 - **Agent type**: a named role such as Planner, Builder or Reviewer. It has a model, the tools it may use, an
   approval policy (*Never*, *Before writes* or *Every action*) and instructions.
-- **Workflow**: a named, versioned graph of steps. The first slice supports these kinds of steps:
+- **Workflow**: a named, versioned graph of steps. These kinds of steps exist:
   - *Trigger*: manual only for now, "offered in Tracket".
-  - *Agent step*: hands work to an agent type, with an input and extra instructions.
+  - *Agent step*: hands work to an agent type, with an input and extra instructions. It answers in text, or with
+    JSON fields (text, number, yes/no, list) that later steps can read.
+  - *Condition*: takes its `yes` branch or its `no` branch, from an expression on earlier results.
+  - *For each*: takes each item of a list through its steps, one at a time or a few in parallel.
   - *Human approval*: pauses until someone approves or rejects. Rejecting can loop back to an earlier step.
+  - *Action*: one thing done in another tool (a Jira comment or status, a Slack message), by a small agent that has
+    the MCP server for it.
   - *End*: marks the run Passed or Failed.
 
-  *Condition*, *For each*, *Action*, schedules and Jira triggers come later.
+  Schedules and Jira triggers come later.
 - **Run**: one execution of a workflow on one ticket, numbered per workflow (`Chart image bump #128`). It records who
   started it and from where ("Tracket: started by Luc"). A ticket can have several runs, and Tracket shows the latest.
-- **Job**: one step inside a run. It has a state (Not started, Running, Waiting, Done, Failed, Skipped), an attempt
-  count, a log, an output, and for agent steps, its agent session.
+- **Job**: one step done once inside a run: in the workflow itself, or for one item of a loop (its *scope*, such as
+  `each[2]/`). It has a state (Running, Waiting, Done, Failed, Rejected, Stopped, Interrupted), an attempt count, a
+  log, an output (and a JSON output), and for agent steps, its agent session. Jobs redone after a rejection or a
+  retry stay in the history, marked superseded.
 - **Agent session**: the Agent SDK conversation behind an agent job: its transcript, tool calls and cost.
 - **Approval**: there are two kinds, and they work differently.
   - **Gate**: a *Human approval* step. It is run state kept in SQLite and can wait hours. Nothing is held open while
@@ -147,7 +154,7 @@ Integrations is left out, because it is all about Jira triggers and write-back, 
 
 ## Workflow files
 
-A workflow in the first slice, for example:
+A workflow, for example:
 
 ```yaml
 name: Fix a bug
@@ -169,6 +176,56 @@ steps:
     input: steps.plan.output
     instructions: Implement the plan, run the tests, push a branch and open a draft PR.
 ```
+
+Steps can nest. A condition holds its branches, a loop its steps:
+
+```yaml
+steps:
+  - id: triage
+    agent: planner
+    output: { files: list, risky: yes/no }      # JSON output, which later steps can read
+  - id: route
+    if: steps.triage.output.risky and steps.triage.output.files contains "Cargo.toml"
+    then:
+      - id: check
+        approval: { summary: "Risky change: {{ steps.triage.output.files }}" }
+    else:
+      - id: note
+        agent: notifier                           # an action is done by a small agent with the right MCP server
+        action: { do: comment, text: "Low risk, going ahead" }   # do: comment | status | slack | other, `to` for status/slack
+  - id: each
+    forEach: steps.triage.output.files
+    as: file
+    parallel: 2                                   # 1 by default: the items share the ticket's worktree
+    onItemFailure: continue                       # or stop (the default)
+    steps:
+      - id: fix
+        agent: builder
+        instructions: Fix {{ file }}
+  - id: report
+    agent: planner
+    input: steps.each.output                      # a loop gives the list of its items' results
+```
+
+Expressions read `steps.<id>.output` (and its JSON fields), and the item of a loop around them. They have `==`, `!=`,
+`<`, `<=`, `>`, `>=`, `contains`, `and`, `or`, `not` and parentheses; text compares without case, and something
+missing is null. `{{ … }}` puts a value into instructions, summaries and messages. Step names are unique in the
+whole workflow. Loading checks that every reference is to a step that has run by then: not one in another branch,
+nor, from outside, one inside a loop. `onReject` goes back to an earlier step next to the approval.
+
+The engine works out what runs next from the jobs written so far, after every change: a condition records which
+branch it took, a loop records its items and starts the next ones as earlier ones finish. Loops are capped at 50
+items and 10 in parallel.
+
+### The board
+
+Every run has a board (`board: false` in a workflow turns it off): notes from its agents and from people, kept in
+the core's `notes` table and shown in Runs and in Tracket's Agents section. Agents use two tools of an MCP server
+the agent host runs in its own process, `sprocket`: `read_notes(since?)` and `post_note(message, to?)` (`to` names
+a step or an agent type). The host sends each call to the core as `board.read` / `board.post` and returns the
+core's `board.answer`. These tools never wait for a person, whatever the agent's ask policy, and an agent type with
+`board: false` only reads. An agent with no MCP server of its own gets this one alone (`strictMcpConfig`). A
+rejection's reason is posted for the step it sends the run back to. See docs/adr/0002-agents-working-together.md.
 
 Agent types are shared between workflows: each is a file, `agents/<id>.yaml`, and steps name it. A workflow file may
 also define its own under `agents:`, which win for that workflow; the Agents screen moves such ones to the shared files

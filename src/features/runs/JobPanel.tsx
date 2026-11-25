@@ -2,10 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { Dialog } from '@/components/Dialog'
 import { KindIcon } from '@/components/FlowGraph'
+import { KINDS } from '@/lib/flow'
 import { ApprovalCard } from '@/features/approvals/ApprovalCard'
 import { describe } from '@/lib/activity'
 import { api, type AppError, type Job, type Run } from '@/lib/api'
 import { duration, usd, when } from '@/lib/format'
+import { findPlace, scopeLabel } from '@/lib/steps'
 import { StateDot, stateLabel } from './StateBadge'
 import { Transcript } from './Transcript'
 
@@ -57,11 +59,18 @@ export function RunEndsPanel({ run, which }: { run: Run; which: 'trigger' | 'end
   )
 }
 
-/** The selected step: its latest job (or an earlier attempt), what it waits for, its log and session. */
+/** The selected step: its job (in a loop, one per item; an earlier attempt), what it waits for, its log and session. */
 export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
   const queryClient = useQueryClient()
-  const step = run.steps.find((s) => s.id === stepId)
-  const attempts = run.jobs.filter((j) => j.stepId === stepId)
+  const place = findPlace(run.steps, stepId)
+  const step = place?.step
+  const jobs = run.jobs.filter((j) => j.stepId === stepId)
+  // A step in a loop runs once per item: its jobs by item, the busy or latest one shown first
+  const scopes = [...new Set(jobs.map((j) => j.scope))]
+  const busy = jobs.find((j) => !j.superseded && (j.state === 'waiting' || j.state === 'running'))
+  const [scopeId, setScope] = useState<string | null>(null)
+  const scope = scopeId !== null && scopes.includes(scopeId) ? scopeId : (busy?.scope ?? jobs.at(-1)?.scope ?? '')
+  const attempts = jobs.filter((j) => j.scope === scope)
   const [attemptId, setAttemptId] = useState<string | null>(null)
   const [sessionOpen, setSessionOpen] = useState(false)
   const job: Job | undefined = attempts.find((j) => j.id === attemptId) ?? attempts.at(-1)
@@ -69,21 +78,57 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
     mutationFn: () => api.retryJob(job!.id),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['runs'] }),
   })
-  if (!step) return null
+  if (!step || !place) return null
 
-  const index = run.steps.indexOf(step) + 1
-  const isAgent = step.kind === 'agent'
+  const runsAgent = step.kind === 'agent' || step.kind === 'action'
   const approvals = run.approvals.filter((a) => a.jobId === job?.id)
   const canRetry =
-    !!job && job === attempts.at(-1) && (job.state === 'failed' || job.state === 'interrupted') && (run.state === 'failed' || run.state === 'interrupted')
+    !!job &&
+    !job.superseded &&
+    job === attempts.at(-1) &&
+    (job.state === 'failed' || job.state === 'interrupted' || job.state === 'rejected') &&
+    (run.state === 'failed' || run.state === 'interrupted')
+  const where = place.parent
+    ? `in ${place.parent.id}${place.branch === 'then' ? ' · yes' : place.branch === 'else' ? ' · no' : ''}`
+    : `step ${place.index + 1}`
+  const items = step.kind === 'forEach' && job && Array.isArray(job.data) ? (job.data as unknown[]) : null
+  const itemState = (i: number) => {
+    const prefix = `${job!.scope}${step.id}[${i}]/`
+    const inItem = run.jobs.filter((j) => !j.superseded && j.scope.startsWith(prefix))
+    return (
+      inItem.find((j) => j.state === 'waiting' || j.state === 'running')?.state ??
+      inItem.find((j) => j.state !== 'done')?.state ??
+      inItem.at(-1)?.state ??
+      'pending'
+    )
+  }
 
   return (
     <div className="flex min-h-full flex-col gap-[18px]">
-      <Heading
-        mark={<StateDot state={job?.state ?? 'pending'} size={28} />}
-        eyebrow={`${isAgent ? 'Agent step' : 'Human approval'} · step ${index}`}
-        title={step.id}
-      />
+      <Heading mark={<StateDot state={job?.state ?? 'pending'} size={28} />} eyebrow={`${KINDS[step.kind].label} · ${where}`} title={step.id} />
+
+      {scopes.length > 1 && (
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Items">
+          {scopes.map((sc) => {
+            const latest = jobs.filter((j) => j.scope === sc).at(-1)
+            return (
+              <button
+                key={sc}
+                type="button"
+                className="ct-chip flex items-center gap-1.5"
+                aria-pressed={sc === scope}
+                onClick={() => {
+                  setScope(sc)
+                  setAttemptId(null)
+                }}
+              >
+                <StateDot state={latest?.state ?? 'pending'} size={8} />
+                {scopeLabel(sc)}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {!job ? (
         <p className="text-ct-text-3">Not started yet.</p>
@@ -91,8 +136,9 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
         <>
           <Facts
             rows={[
-              ['Status', stateLabel(job.state), true],
-              ['Run by', isAgent ? step.agent : 'You'],
+              ['Status', `${stateLabel(job.state)}${job.superseded ? ' (redone since)' : ''}`, true],
+              ...(scope ? ([['Item', scopeLabel(scope)]] as [string, string][]) : []),
+              ['Run by', runsAgent ? step.agent : step.kind === 'approval' ? 'You' : 'Sprocket'],
               ['Duration', duration(job.startedAt, job.endedAt) || '–'],
               ['Attempt', `${job.attempt} of ${attempts.length}`],
               ...(job.costUsd ? ([['Cost', usd(job.costUsd)]] as [string, string][]) : []),
@@ -117,11 +163,45 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
               {job.error}
             </p>
           )}
-          {job.output && (
+
+          {step.kind === 'condition' && (
             <div className="flex flex-col gap-2">
-              <span className="text-[13px] font-semibold">{isAgent ? 'Output' : 'Note'}</span>
-              <pre className="max-h-60 overflow-auto rounded-lg border border-ct-border bg-ct-subtle p-3 text-xs whitespace-pre-wrap ct-mono">{job.output}</pre>
+              <span className="text-[13px] font-semibold">Took</span>
+              <p>
+                <strong>{job.output === 'then' ? 'yes' : job.output === 'else' ? 'no' : '–'}</strong>
+                <code className="ml-2 text-xs text-ct-text-3 ct-mono">{step.if}</code>
+              </p>
             </div>
+          )}
+
+          {items && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[13px] font-semibold">Items</span>
+              <ol className="flex flex-col gap-1">
+                {items.map((item, i) => (
+                  <li key={i} className="flex items-center gap-2 rounded-lg border border-ct-border px-2.5 py-1.5 text-[13px]">
+                    <StateDot state={itemState(i)} size={10} />
+                    <span className="text-ct-text-3">{i + 1}</span>
+                    <span className="truncate text-xs ct-mono">{typeof item === 'string' ? item : JSON.stringify(item)}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {job.data != null && step.kind !== 'forEach' ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-[13px] font-semibold">JSON output</span>
+              <pre className="max-h-60 overflow-auto rounded-lg border border-ct-border bg-ct-subtle p-3 text-xs whitespace-pre-wrap ct-mono">{JSON.stringify(job.data, null, 2)}</pre>
+            </div>
+          ) : (
+            job.output &&
+            step.kind !== 'condition' && (
+              <div className="flex flex-col gap-2">
+                <span className="text-[13px] font-semibold">{step.kind === 'approval' ? 'Note' : step.kind === 'forEach' ? 'Results' : 'Output'}</span>
+                <pre className="max-h-60 overflow-auto rounded-lg border border-ct-border bg-ct-subtle p-3 text-xs whitespace-pre-wrap ct-mono">{job.output}</pre>
+              </div>
+            )
           )}
 
           <div className="flex flex-col gap-2">
@@ -137,25 +217,25 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
           </div>
           {retry.error && <p className="text-xs text-ct-failed">{(retry.error as unknown as AppError).message}</p>}
 
-          {(canRetry || isAgent) && (
-          <div className="mt-auto flex flex-wrap gap-2 border-t border-ct-border pt-3.5">
-            {canRetry && (
-              <button type="button" className="ct-btn ct-btn-primary" disabled={retry.isPending} onClick={() => retry.mutate()}>
-                {job.hasSession ? 'Resume job' : 'Retry job'}
-              </button>
-            )}
-            {isAgent && (
-              <button type="button" className="ct-btn" onClick={() => setSessionOpen(true)}>
-                Open agent session
-              </button>
-            )}
-          </div>
+          {(canRetry || runsAgent) && (
+            <div className="mt-auto flex flex-wrap gap-2 border-t border-ct-border pt-3.5">
+              {canRetry && (
+                <button type="button" className="ct-btn ct-btn-primary" disabled={retry.isPending} onClick={() => retry.mutate()}>
+                  {job.hasSession ? 'Resume job' : 'Retry'}
+                </button>
+              )}
+              {runsAgent && (
+                <button type="button" className="ct-btn" onClick={() => setSessionOpen(true)}>
+                  Open agent session
+                </button>
+              )}
+            </div>
           )}
         </>
       )}
 
       {sessionOpen && job && (
-        <Dialog title={`${step.agent} · ${step.id} · attempt ${job.attempt}`} onClose={() => setSessionOpen(false)}>
+        <Dialog title={`${step.agent} · ${step.id}${scope ? ` · ${scopeLabel(scope)}` : ''} · attempt ${job.attempt}`} onClose={() => setSessionOpen(false)}>
           <Transcript jobId={job.id} live={job.state === 'running' || job.state === 'waiting'} />
         </Dialog>
       )}

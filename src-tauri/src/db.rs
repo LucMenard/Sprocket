@@ -87,6 +87,28 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX activity_by_job ON activity (job_id);
     ALTER TABLE messages ADD COLUMN at TEXT;
     "#,
+    // 4: conditions and loops. A job belongs to a loop item by its scope (`each[2]/`); jobs redone after a
+    // rejection or a retry are kept but superseded; `data` is a JSON output, or a loop's items
+    r#"
+    ALTER TABLE jobs ADD COLUMN scope TEXT NOT NULL DEFAULT '';
+    ALTER TABLE jobs ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE jobs ADD COLUMN data TEXT;
+    CREATE INDEX jobs_current ON jobs (run_id, step_id, scope) WHERE superseded = 0;
+    "#,
+    // 5: the run's board, shared by its agents and the people following it
+    r#"
+    CREATE TABLE notes (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id    TEXT NOT NULL REFERENCES runs (id),
+        job_id    TEXT,
+        author    TEXT NOT NULL,
+        agent     TEXT,
+        addressee TEXT,
+        body      TEXT NOT NULL,
+        at        TEXT NOT NULL
+    );
+    CREATE INDEX notes_by_run ON notes (run_id, id);
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.

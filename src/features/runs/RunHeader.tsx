@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { api, type AppError, type Run } from '@/lib/api'
+import { stepState } from '@/lib/steps'
 import { duration, usd, when } from '@/lib/format'
 import { StateBadge } from './StateBadge'
 import { useRunSelection } from './useRunSelection'
@@ -46,7 +47,7 @@ export function RunHeader({ run }: { run: Run }) {
 
 /** The facts card over the graph: ticket, who started it, when, how long, how far. */
 export function RunFacts({ run }: { run: Run }) {
-  const done = run.steps.filter((s) => run.jobs.filter((j) => j.stepId === s.id).at(-1)?.state === 'done').length
+  const done = run.steps.filter((s) => stepState(run, s.id) === 'done').length
   const facts: [string, string][] = [
     ['Started by', run.startedBy],
     ['Started', when(run.startedAt)],

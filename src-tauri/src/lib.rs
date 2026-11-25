@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod engine;
 mod error;
+mod expr;
 mod host;
 mod token;
 mod tray;
@@ -82,7 +83,7 @@ impl engine::Sink for LiveSink {
 }
 
 fn start(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = app.path().app_data_dir()?;
+    let data_dir = data_dir_from_env().unwrap_or(app.path().app_data_dir()?);
     std::fs::create_dir_all(&data_dir)?;
     let db = db::Db::open(&data_dir.join("sprocket.sqlite")).map_err(|e| e.message)?;
     db.activity(None, "app.started", Some(env!("CARGO_PKG_VERSION"))).map_err(|e| e.message)?;
@@ -148,6 +149,15 @@ fn open_view_from_env(app: &tauri::App) {
 #[cfg(not(debug_assertions))]
 fn open_view_from_env(_: &tauri::App) {}
 
+/// Debug builds only: `SPROCKET_DATA_DIR` keeps the database and the workflows somewhere else, to try
+/// things without touching the real ones.
+fn data_dir_from_env() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os("SPROCKET_DATA_DIR").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -165,6 +175,7 @@ pub fn run() {
             commands::start_run,
             commands::decide_approval,
             commands::cancel_run,
+            commands::post_note,
             commands::retry_job,
             commands::job_messages,
             commands::activity,

@@ -8,6 +8,7 @@ import type { Run } from '@/lib/api'
 import { when } from '@/lib/format'
 import { useNav } from '@/lib/nav'
 import { useActivity } from '@/lib/queries'
+import { agentOf } from '@/lib/steps'
 import { RecentRuns } from './RecentRuns'
 
 /** Each agent type, with what it is doing now: the job of a run it is running or waiting in. */
@@ -17,7 +18,7 @@ function useAgentsAtWork(runs: Run[]) {
   return ids.map((id) => {
     const busy = runs.flatMap((run) =>
       run.jobs
-        .filter((j) => (j.state === 'running' || j.state === 'waiting') && run.steps.find((s) => s.id === j.stepId)?.agent === id)
+        .filter((j) => (j.state === 'running' || j.state === 'waiting') && agentOf(run.steps, j.stepId) === id)
         .map((job) => ({ run, job })),
     )
     return { id, busy }

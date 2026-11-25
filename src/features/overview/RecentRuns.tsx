@@ -3,6 +3,7 @@ import { StateBadge, StateDot, stateLabel } from '@/features/runs/StateBadge'
 import { useRunSelection } from '@/features/runs/useRunSelection'
 import type { Run } from '@/lib/api'
 import { when } from '@/lib/format'
+import { stepState } from '@/lib/steps'
 import { useNav } from '@/lib/nav'
 
 /** One dot per step in its latest state, joined by short lines, green once passed: the mockup's pipeline. */
@@ -10,7 +11,7 @@ export function Pipeline({ run }: { run: Run }) {
   return (
     <span className="flex items-center">
       {run.steps.map((step, i) => {
-        const state = run.jobs.filter((j) => j.stepId === step.id).at(-1)?.state ?? 'pending'
+        const state = stepState(run, step.id)
         const passed = state === 'done'
         return (
           <span key={step.id} className="flex items-center" title={`${step.id}: ${stateLabel(state)}`}>

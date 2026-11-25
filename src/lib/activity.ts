@@ -34,6 +34,8 @@ export function describe(what: string, detail: string | null): string {
       return `Tool allowed by ${d}`
     case 'tool.rejected':
       return `Tool denied by ${d}`
+    case 'note.posted':
+      return `Note on the board from ${d}`
     default:
       return d ? `${what}: ${d}` : what
   }

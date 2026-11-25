@@ -129,6 +129,23 @@ async fn decide(State(ctx): State<Arc<Ctx>>, Path(id): Path<String>, Json(d): Js
 }
 
 #[derive(Deserialize)]
+struct NewNote {
+    body: String,
+    /// A step or an agent type it is for; everyone when left out
+    to: Option<String>,
+    /// Who wrote it, as Tracket knows them
+    by: Option<String>,
+}
+
+async fn post_note(State(ctx): State<Arc<Ctx>>, Path(id): Path<String>, Json(n): Json<NewNote>) -> Response {
+    let by = n.by.unwrap_or_else(|| "Tracket".into());
+    match ctx.engine.post_note(&id, &by, &n.body, n.to.as_deref()) {
+        Ok(note) => (StatusCode::CREATED, Json(note)).into_response(),
+        Err(e) => from_app(e),
+    }
+}
+
+#[derive(Deserialize)]
 struct By {
     by: Option<String>,
 }
@@ -149,6 +166,7 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/v1/workflows", get(workflows))
         .route("/v1/runs", get(list_runs).post(start_run))
         .route("/v1/runs/{id}/cancel", post(cancel))
+        .route("/v1/runs/{id}/notes", post(post_note))
         .route("/v1/jobs/{id}/retry", post(retry))
         .route("/v1/approvals/{id}", post(decide))
         .layer(middleware::from_fn_with_state(ctx.clone(), require_token))

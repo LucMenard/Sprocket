@@ -7,10 +7,11 @@ import { useWorkflows } from '@/features/workflows/useWorkflows'
 import { api, type AgentType, type AppError } from '@/lib/api'
 import { useNav } from '@/lib/nav'
 import { useMcpServers } from '@/lib/queries'
+import { agentOf, allSteps } from '@/lib/steps'
 import { AgentEditor } from './AgentEditor'
 import { useAgents } from './useAgents'
 
-const NEW_AGENT = { description: null, model: 'claude-sonnet-5-5', ask: 'before-writes' as const, tools: [], mcp: [], instructions: null }
+const NEW_AGENT = { description: null, model: 'claude-sonnet-5-5', ask: 'before-writes' as const, tools: [], mcp: [], instructions: null, board: true }
 
 export function AgentsView() {
   const queryClient = useQueryClient()
@@ -49,11 +50,11 @@ export function AgentsView() {
   })
 
   const shown = current ?? currentLocal?.agent
-  const usedIn = shown ? workflows.filter((w) => w.steps.some((s) => s.agent === shown.id) && w.agents.some((a) => a.id === shown.id && a.shared === shown.shared)) : []
+  const usedIn = shown ? workflows.filter((w) => allSteps(w.steps).some((s) => s.agent === shown.id) && w.agents.some((a) => a.id === shown.id && a.shared === shown.shared)) : []
   const working = shown
     ? runs.flatMap((run) =>
         usedIn.some((w) => w.id === run.workflowId)
-          ? run.jobs.filter((j) => (j.state === 'running' || j.state === 'waiting') && run.steps.find((s) => s.id === j.stepId)?.agent === shown.id).map((job) => ({ run, job }))
+          ? run.jobs.filter((j) => (j.state === 'running' || j.state === 'waiting') && agentOf(run.steps, j.stepId) === shown.id).map((job) => ({ run, job }))
           : [],
       )
     : []
@@ -188,7 +189,7 @@ export function AgentsView() {
                   >
                     <span className="flex-1 font-medium">{w.name}</span>
                     <span className="text-xs text-ct-text-3">
-                      {w.steps
+                      {allSteps(w.steps)
                         .filter((s) => s.agent === shown.id)
                         .map((s) => s.id)
                         .join(', ')}

@@ -22,6 +22,7 @@
     --st-fail-bg: rgba(239, 68, 68, 0.12); --st-fail-fg: #B91C1C; --st-fail-border: rgba(239, 68, 68, 0.4);
     --lit: #C2410C; --lit-bg: rgba(224, 86, 26, 0.10); --lit-border: rgba(224, 86, 26, 0.45);
     --loop-bg: rgba(236, 72, 153, 0.10); --loop-fg: #9D174D;
+    --ct-loop-frame: rgba(252, 231, 243, 0.5); --ct-loop-border: #D9A3BE;
     --log-fg: #E5E5E5;
 }
 
@@ -36,6 +37,7 @@
     --st-fail-bg: rgba(239, 68, 68, 0.15); --st-fail-fg: #FCA5A5; --st-fail-border: rgba(239, 68, 68, 0.45);
     --lit: #FFB27A; --lit-bg: rgba(255, 90, 31, 0.12); --lit-border: rgba(255, 178, 122, 0.45);
     --loop-bg: rgba(236, 72, 153, 0.14); --loop-fg: #F9A8D4;
+    --ct-loop-frame: rgba(236, 72, 153, 0.06); --ct-loop-border: rgba(249, 168, 212, 0.4);
 }
 
 /* The names the screens use, on the mockup's tokens (same in both themes) */
@@ -76,6 +78,9 @@
     --ct-kind-agent-bg: var(--st-act-bg); --ct-kind-agent: var(--st-act-fg);
     --ct-kind-approval-bg: #FEF3C7; --ct-kind-approval: #92400E;
     --ct-kind-end-bg: var(--muted); --ct-kind-end: var(--mfg);
+    --ct-kind-condition-bg: #EDE9FE; --ct-kind-condition: #5B21B6;
+    --ct-kind-forEach-bg: var(--loop-bg); --ct-kind-forEach: var(--loop-fg);
+    --ct-kind-action-bg: #CCFBF1; --ct-kind-action: #115E59;
 
     --ct-wait-card-bg: var(--lit-bg); --ct-wait-card-border: var(--lit-border);
     --ct-approve: #1F7A3F;

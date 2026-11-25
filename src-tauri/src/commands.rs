@@ -71,6 +71,13 @@ pub async fn decide_approval(ctx: State<'_, Arc<Ctx>>, id: String, approve: bool
     ctx.engine.decide(&id, approve, reason, "Sprocket")
 }
 
+/// A note on a run's board from the person at this computer.
+#[tauri::command]
+pub async fn post_note(ctx: State<'_, Arc<Ctx>>, run_id: String, body: String, to: Option<String>) -> Result<crate::engine::NoteView> {
+    let me = std::env::var("USERNAME").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| "You".into());
+    ctx.engine.post_note(&run_id, &me, &body, to.as_deref())
+}
+
 #[tauri::command]
 pub async fn cancel_run(ctx: State<'_, Arc<Ctx>>, id: String) -> Result<()> {
     ctx.engine.cancel_run(&id, "Sprocket")
