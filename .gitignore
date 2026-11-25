@@ -1,0 +1,7 @@
+node_modules/
+**/agent-host/dist/
+*.log
+spike/sandbox-repo/
+target/
+/dist/
+src-tauri/gen/
