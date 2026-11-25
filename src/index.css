@@ -81,6 +81,7 @@
     --ct-kind-condition-bg: #EDE9FE; --ct-kind-condition: #5B21B6;
     --ct-kind-forEach-bg: var(--loop-bg); --ct-kind-forEach: var(--loop-fg);
     --ct-kind-action-bg: #CCFBF1; --ct-kind-action: #115E59;
+    --ct-kind-parallel-bg: var(--muted); --ct-kind-parallel: var(--mfg);
 
     --ct-wait-card-bg: var(--lit-bg); --ct-wait-card-border: var(--lit-border);
     --ct-approve: #1F7A3F;
@@ -234,6 +235,9 @@
     .ct-btn-approve { border: 0; background: var(--ct-approve); color: #FFFFFF; font-weight: 600; }
     .ct-btn-approve:hover:not(:disabled) { background: var(--ct-approve); filter: brightness(1.08); }
     .ct-btn-danger { border-color: var(--ct-danger-border); color: var(--ct-danger); }
+    /* The confirming button of a confirmation that deletes something */
+    .ct-btn-danger-solid { border: 0; background: var(--ct-failed); color: #FFFFFF; font-weight: 600; }
+    .ct-btn-danger-solid:hover:not(:disabled) { background: var(--ct-failed); filter: brightness(1.08); }
     .ct-btn-ghost { border-color: transparent; background: transparent; }
 
     .ct-input {

@@ -60,9 +60,25 @@ export interface WorkflowDraft {
   /** A board its runs' agents and people share */
   board: boolean
   steps: WorkflowStep[]
+  /** Nodes placed by hand in the editor, by step id (and `$trigger`, `$end`) */
+  layout: Record<string, Point>
+  /**
+   * The editor's own: chains of nodes no link reaches, after a link was deleted. Never saved: the editor won't
+   * save while there are any.
+   */
+  loose: WorkflowStep[][]
+  /** The editor's own: links deleted that only followed from the others (`from>to`); never saved either */
+  cut: string[]
+  /** The editor's own: links drawn that the workflow can't hold (`from>to`); saving waits until they go */
+  extra: string[]
 }
 
-export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach'
+export interface Point {
+  x: number
+  y: number
+}
+
+export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel'
 export type OutputType = 'text' | 'number' | 'yes/no' | 'list'
 export type ActionKind = 'comment' | 'status' | 'slack' | 'other'
 
@@ -99,6 +115,8 @@ export interface WorkflowStep {
   parallel: number
   onItemFailure: 'stop' | 'continue'
   steps: WorkflowStep[]
+  /** A parallel group's branches: they run at the same time, and the next step waits for all of them */
+  branches: WorkflowStep[][]
 }
 
 export interface Workflow {
@@ -108,6 +126,7 @@ export interface Workflow {
   offerInTracket: boolean
   maxParallelRuns: number
   board: boolean
+  layout: Record<string, Point>
   file: string
   agents: AgentType[]
   steps: WorkflowStep[]

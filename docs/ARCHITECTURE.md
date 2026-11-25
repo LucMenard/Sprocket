@@ -43,6 +43,7 @@ These come from the mockup, so the code, the UI and this document use the same n
   - *Condition*: takes its `yes` branch or its `no` branch, from an expression on earlier results.
   - *For each*: takes each item of a list through its steps, one at a time or a few in parallel.
   - *Human approval*: pauses until someone approves or rejects. Rejecting can loop back to an earlier step.
+  - *Parallel branches*: lists of steps that run at the same time; the step after them waits for all of them.
   - *Action*: one thing done in another tool (a Jira comment or status, a Slack message), by a small agent that has
     the MCP server for it.
   - *End*: marks the run Passed or Failed.
@@ -206,6 +207,19 @@ steps:
     agent: planner
     input: steps.each.output                      # a loop gives the list of its items' results
 ```
+
+Parallel branches have no node of their own in the editor: a node linked after another one that already has a
+next step makes them branches of a group, written as
+
+```yaml
+  - id: together
+    branches:
+      - [ { id: code, agent: builder } ]
+      - [ { id: docs, agent: planner }, { id: review, approval: { summary: steps.docs.output }, onReject: docs } ]
+```
+
+A branch can't read another one (they run at the same time); the steps after the group read them all. The group
+fails once its branches have ended if one of them failed. The branches share the ticket's worktree.
 
 Expressions read `steps.<id>.output` (and its JSON fields), and the item of a loop around them. They have `==`, `!=`,
 `<`, `<=`, `>`, `>=`, `contains`, `and`, `or`, `not` and parentheses; text compares without case, and something

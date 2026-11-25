@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { api, type AgentDraft, type AgentType, type AppError, type AskPolicy } from '@/lib/api'
 
 const ASK: { id: AskPolicy; label: string; help: string }[] = [
@@ -64,6 +65,7 @@ const draftOf = (a: AgentType): AgentDraft => ({
 export function AgentEditor({ agent, mcpServers, usedBy, onDeleted }: { agent: AgentType; mcpServers: string[]; usedBy: string[]; onDeleted: () => void }) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<AgentDraft>(() => draftOf(agent))
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftOf(agent))
   const set = <K extends keyof AgentDraft>(key: K, value: AgentDraft[K]) => setDraft((d) => ({ ...d, [key]: value }))
   const reload = () => {
@@ -182,12 +184,24 @@ export function AgentEditor({ agent, mcpServers, usedBy, onDeleted }: { agent: A
           className="ct-btn ct-btn-danger self-start"
           disabled={usedBy.length > 0 || remove.isPending}
           title={usedBy.length ? `Used by ${usedBy.join(', ')}` : undefined}
-          onClick={() => window.confirm(`Delete the agent type "${agent.id}"?`) && remove.mutate()}
+          onClick={() => setConfirmDelete(true)}
         >
           Delete agent type
         </button>
         {usedBy.length > 0 && <span className="text-xs text-ct-text-3">Used by {usedBy.join(', ')}: change their steps first.</span>}
       </div>
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`Delete the agent type "${agent.id}"?`}
+          confirm="Delete agent type"
+          danger
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(undefined, { onSettled: () => setConfirmDelete(false) })}
+          onCancel={() => setConfirmDelete(false)}
+        >
+          <p>Its file, agents/{agent.id}.yaml, is deleted. No workflow uses it.</p>
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

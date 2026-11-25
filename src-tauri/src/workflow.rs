@@ -33,6 +33,17 @@ pub struct FileWorkflow {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, FileAgent>,
     pub steps: Vec<FileStep>,
+    /// Where the editor shows the nodes someone placed by hand, by step (and `$trigger`, `$end`).
+    /// Only the editor reads it; the others are laid out automatically
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout: BTreeMap<String, Point>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
 }
 
 fn one() -> u32 {
@@ -53,6 +64,7 @@ fn is_yes(b: &bool) -> bool {
 /// - `action` (with the `agent` that does it): one thing done in another tool, such as a Jira comment
 /// - `if` with `then` and `else`: takes one branch or the other
 /// - `forEach` with `steps`: does those steps for each item of a list, `parallel` at a time
+/// - `branches`: lists of steps that run at the same time; the next step waits for all of them
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileStep {
@@ -79,6 +91,8 @@ pub struct FileStep {
     pub on_item_failure: Option<ItemFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<Vec<FileStep>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches: Option<Vec<Vec<FileStep>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +173,8 @@ pub enum StepKind {
     Action,
     Condition,
     ForEach,
+    /// Branches that run at the same time
+    Parallel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -206,12 +222,15 @@ pub struct Step {
     /// A loop's steps
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// A parallel group's branches
+    #[serde(default)]
+    pub branches: Vec<Vec<Step>>,
 }
 
 impl Step {
     /// The steps inside this one: both branches of a condition, a loop's steps.
     pub fn children(&self) -> impl Iterator<Item = &Step> {
-        self.then.iter().chain(&self.otherwise).chain(&self.steps)
+        self.then.iter().chain(&self.otherwise).chain(&self.steps).chain(self.branches.iter().flatten())
     }
 
     /// The JSON schema an agent step's output must follow.
@@ -271,6 +290,9 @@ impl Step {
                 f.on_item_failure = Some(self.on_item_failure).filter(|&p| p != ItemFailure::Stop);
                 f.steps = steps(&self.steps);
             }
+            StepKind::Parallel => {
+                f.branches = Some(self.branches.iter().map(|b| b.iter().map(Step::to_file).collect()).collect());
+            }
         }
         f
     }
@@ -302,6 +324,9 @@ pub struct Workflow {
     /// The agent types its steps use, resolved: its own first, then the shared ones
     pub agents: Vec<AgentType>,
     pub steps: Vec<Step>,
+    /// Nodes placed by hand in the editor
+    #[serde(default)]
+    pub layout: BTreeMap<String, Point>,
 }
 
 impl Workflow {
@@ -314,6 +339,9 @@ impl Workflow {
                 walk(&s.then, out);
                 walk(&s.otherwise, out);
                 walk(&s.steps, out);
+                for b in &s.branches {
+                    walk(b, out);
+                }
             }
         }
         let mut out = Vec::new();
@@ -327,7 +355,7 @@ impl Workflow {
                 if step.id == id {
                     return Some(Place { step, block, index, loops: loops.clone() });
                 }
-                for branch in [&step.then, &step.otherwise] {
+                for branch in [&step.then, &step.otherwise].into_iter().chain(&step.branches) {
                     if let Some(found) = search(branch, id, loops) {
                         return Some(found);
                     }
@@ -454,17 +482,18 @@ impl Checker<'_> {
             return Err(format!("Two steps are called `{id}`"));
         }
         let at = |field: &str| format!("Step `{id}`, {field}");
-        let kinds = [s.approval.is_some(), s.action.is_some(), s.condition.is_some(), s.for_each.is_some()];
+        let kinds = [s.approval.is_some(), s.action.is_some(), s.condition.is_some(), s.for_each.is_some(), s.branches.is_some()];
         let kind = match kinds {
-            [false, false, false, false] if s.agent.is_some() => StepKind::Agent,
-            [true, false, false, false] => StepKind::Approval,
-            [false, true, false, false] => StepKind::Action,
-            [false, false, true, false] => StepKind::Condition,
-            [false, false, false, true] => StepKind::ForEach,
-            [false, false, false, false] => {
-                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if` or `forEach`"))
+            [false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
+            [true, false, false, false, false] => StepKind::Approval,
+            [false, true, false, false, false] => StepKind::Action,
+            [false, false, true, false, false] => StepKind::Condition,
+            [false, false, false, true, false] => StepKind::ForEach,
+            [false, false, false, false, true] => StepKind::Parallel,
+            [false, false, false, false, false] => {
+                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach` or `branches`"))
             }
-            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if` or a `forEach`")),
+            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach` or `branches`")),
         };
         // Fields that belong to another kind of step are a mistake, not something to ignore
         let stray = [
@@ -479,6 +508,7 @@ impl Checker<'_> {
             ("as", s.item.is_some() && kind != StepKind::ForEach),
             ("parallel", s.parallel.is_some() && kind != StepKind::ForEach),
             ("onItemFailure", s.on_item_failure.is_some() && kind != StepKind::ForEach),
+            ("branches", s.branches.is_some() && kind != StepKind::Parallel),
         ];
         if let Some((field, _)) = stray.iter().find(|(_, bad)| *bad) {
             return Err(format!("Step `{id}`: `{field}` doesn't belong on this kind of step"));
@@ -501,6 +531,7 @@ impl Checker<'_> {
             parallel: 1,
             on_item_failure: ItemFailure::Stop,
             steps: Vec::new(),
+            branches: Vec::new(),
         };
         let mut gives: Option<Vec<String>> = None;
         match kind {
@@ -568,6 +599,21 @@ impl Checker<'_> {
                 vis.steps.extend(else_vis.steps);
                 return Ok(step);
             }
+            StepKind::Parallel => {
+                let lanes = s.branches.unwrap_or_default();
+                if lanes.len() < 2 || lanes.iter().any(Vec::is_empty) {
+                    return Err(format!("Step `{id}`: `branches` needs two or more lists of steps, none empty"));
+                }
+                // The branches run at the same time: one can't read another; the steps after read them all
+                let mut after = vis.clone();
+                for lane in lanes {
+                    let mut lane_vis = vis.clone();
+                    step.branches.push(self.block(lane, &mut lane_vis)?);
+                    after.steps.extend(lane_vis.steps);
+                }
+                *vis = after;
+                return Ok(step);
+            }
             StepKind::ForEach => {
                 vis.check(s.for_each.as_deref().unwrap_or_default(), &at("forEach"))?;
                 let item = s.item.unwrap_or_else(|| "item".into());
@@ -594,6 +640,10 @@ impl Checker<'_> {
     }
 }
 
+fn checker_seen(steps: &[Step], id: &str) -> bool {
+    steps.iter().any(|s| s.id == id || checker_seen(&s.children().cloned().collect::<Vec<_>>(), id))
+}
+
 /// Checks a workflow file and resolves its agents against the shared ones.
 pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, AgentType>) -> Result<Workflow, String> {
     if w.name.trim().is_empty() {
@@ -614,6 +664,8 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         board: w.board,
         file: file.to_string(),
         agents: used,
+        // Positions of steps that no longer exist are dropped
+        layout: w.layout.into_iter().filter(|(k, _)| k == "$trigger" || k == "$end" || checker_seen(&steps, k)).collect(),
         steps,
     })
 }
@@ -765,6 +817,7 @@ steps:
             board: true,
             agents: BTreeMap::new(),
             steps: w.steps.iter().map(Step::to_file).collect(),
+            layout: BTreeMap::new(),
         };
         let again = parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap();
         assert_eq!(serde_json::to_value(&again.steps).unwrap(), serde_json::to_value(&w.steps).unwrap());
@@ -784,6 +837,37 @@ steps:
         assert!(bad("- id: triage\n  agent: planner\n", "- id: triage\n  agent: planner\n  then: []\n").contains("`then` doesn't belong"));
         assert!(bad("  as: file", "  as: file\n  if: x").contains("only one of"));
         assert!(bad("  as: file", "  as: not").contains("`as` is a name"));
+    }
+
+    const TOGETHER: &str = "name: T\nsteps:\n- id: plan\n  agent: planner\n- id: both\n  branches:\n  - - id: code\n      agent: builder\n  - - id: docs\n      agent: planner\n    - id: check\n      approval: { summary: steps.docs.output }\n- id: merge\n  agent: builder\n  input: '{{ steps.code.output }} {{ steps.check.output }}'\n";
+
+    #[test]
+    fn reads_parallel_branches() {
+        let w = parse("t", "t.yaml", TOGETHER, &shared()).unwrap();
+        assert_eq!(w.steps[1].kind, StepKind::Parallel);
+        assert_eq!(w.steps[1].branches.len(), 2);
+        let check = w.find("check").unwrap();
+        assert_eq!((check.index, check.block.len()), (1, 2));
+        assert_eq!(w.all_steps().len(), 6);
+        // One branch can't read the other: they run at the same time
+        assert!(err(&TOGETHER.replace("summary: steps.docs.output", "summary: steps.code.output")).contains("no earlier step `code`"));
+        assert!(err("name: x\nsteps:\n- id: g\n  branches:\n  - - id: a\n      agent: planner\n").contains("two or more"));
+    }
+
+    #[test]
+    fn keeps_hand_placed_positions_of_existing_steps_only() {
+        let yaml = "name: x
+steps:
+- id: a
+  agent: planner
+layout:
+  a: { x: 300, y: 120 }
+  gone: { x: 1, y: 2 }
+  $end: { x: 300, y: 400 }
+";
+        let w = parse("t", "t.yaml", yaml, &shared()).unwrap();
+        assert_eq!(w.layout.keys().map(String::as_str).collect::<Vec<_>>(), ["$end", "a"]);
+        assert_eq!(w.layout["a"], Point { x: 300, y: 120 });
     }
 
     #[test]

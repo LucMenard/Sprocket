@@ -636,3 +636,26 @@ fn without_a_board_or_the_right_to_post_the_tools_say_no() {
     w.host(json!({"type": "board.post", "requestId": "q2", "jobId": job, "message": "hello"}));
     assert_eq!(w.board_answer("q2"), ("Your agent type may read the board, not post to it".into(), true));
 }
+
+#[test]
+fn parallel_branches_start_together_and_the_next_step_waits_for_all() {
+    let w = world();
+    w.with("together", "name: Together\nsteps:\n- id: both\n  branches:\n  - - id: code\n      agent: builder\n  - - id: docs\n      agent: planner\n- id: merge\n  agent: builder\n");
+    let run = w.start_wf("together");
+    let starts = w.starts();
+    assert_eq!(starts.len(), 2, "both branches start at once");
+    w.end(&starts[0].0, "code done");
+    assert_eq!(w.starts().len(), 2, "merge waits for docs");
+    w.end(&starts[1].0, "docs done");
+    let merge = w.starts()[2].0.clone();
+    w.end(&merge, "merged");
+    assert_eq!(w.run(&run.id).state, "passed");
+
+    // A failed branch fails the run once the other has ended
+    let run = w.start_wf("together");
+    let starts = w.starts();
+    w.fail(&starts[3].0);
+    assert_eq!(w.run(&run.id).state, "running");
+    w.end(&starts[4].0, "docs");
+    assert_eq!(w.run(&run.id).state, "failed");
+}

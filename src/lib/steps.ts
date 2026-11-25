@@ -1,36 +1,51 @@
 import type { Job, JobState, Run, StepKind, WorkflowStep } from './api'
 
-/** The steps inside a step: a condition's branches, a loop's steps. */
-export const children = (s: WorkflowStep) => [...s.then, ...s.else, ...s.steps]
+/** The steps inside a step: a condition's branches, a loop's steps, a parallel group's branches. */
+export const children = (s: WorkflowStep) => [...s.then, ...s.else, ...s.steps, ...s.branches.flat()]
 
 /** Every step, nested ones included, in the order they are written. */
 export function allSteps(steps: WorkflowStep[]): WorkflowStep[] {
   return steps.flatMap((s) => [s, ...allSteps(children(s))])
 }
 
-export type Branch = 'then' | 'else' | 'steps'
+export type Branch = 'then' | 'else' | 'steps' | 'branches'
 
-/** Where a step is: the block it is in (by its parent and branch), its place there, the loops around it. */
+/**
+ * Where a step is: the block it is in (by its parent and branch; `lane` for a parallel group's branch), its
+ * place there, the loops around it.
+ */
 export interface Place {
   step: WorkflowStep
   block: WorkflowStep[]
   index: number
   parent: WorkflowStep | null
   branch: Branch | null
+  lane: number
   loops: WorkflowStep[]
 }
 
-export function findPlace(steps: WorkflowStep[], id: string, parent: WorkflowStep | null = null, branch: Branch | null = null, loops: WorkflowStep[] = []): Place | null {
+export function findPlace(
+  steps: WorkflowStep[],
+  id: string,
+  parent: WorkflowStep | null = null,
+  branch: Branch | null = null,
+  loops: WorkflowStep[] = [],
+  lane = 0,
+): Place | null {
   for (const [index, step] of steps.entries()) {
-    if (step.id === id) return { step, block: steps, index, parent, branch, loops }
+    if (step.id === id) return { step, block: steps, index, parent, branch, lane, loops }
     const inner =
       findPlace(step.then, id, step, 'then', loops) ??
       findPlace(step.else, id, step, 'else', loops) ??
-      findPlace(step.steps, id, step, 'steps', [...loops, step])
+      findPlace(step.steps, id, step, 'steps', [...loops, step]) ??
+      step.branches.reduce<Place | null>((found, b, i) => found ?? findPlace(b, id, step, 'branches', loops, i), null)
     if (inner) return inner
   }
   return null
 }
+
+/** Whether `inner` is `outer` or one of the steps inside it. */
+export const isWithin = (outer: WorkflowStep, inner: string): boolean => outer.id === inner || children(outer).some((c) => isWithin(c, inner))
 
 /**
  * What a step can read at its place, as the Rust side checks it: earlier steps (a condition's branches once
@@ -53,6 +68,10 @@ export function readable(steps: WorkflowStep[], id: string): { steps: WorkflowSt
       } else if (s.kind === 'forEach') {
         walk(s.steps, { steps: [...vis.steps], items: [...vis.items, s.as || 'item'] })
         vis = { ...vis, steps: [...vis.steps, s] }
+      } else if (s.kind === 'parallel') {
+        // A branch can't read another one; the steps after the group read them all
+        const lanes = s.branches.map((b) => walk(b, { steps: [...vis.steps], items: vis.items }))
+        vis = { steps: [...new Set(lanes.flatMap((l) => l.steps))], items: vis.items }
       } else {
         vis = { ...vis, steps: [...vis.steps, s] }
       }
@@ -81,6 +100,7 @@ export function emptyStep(id: string, kind: StepKind): WorkflowStep {
     parallel: 1,
     onItemFailure: 'stop',
     steps: [],
+    branches: [],
   }
 }
 

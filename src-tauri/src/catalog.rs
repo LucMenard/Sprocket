@@ -80,6 +80,8 @@ pub struct WorkflowDraft {
     pub board: bool,
     /// The steps as the editor has them; checked again before anything is written
     pub steps: Vec<Step>,
+    #[serde(default)]
+    pub layout: std::collections::BTreeMap<String, workflow::Point>,
 }
 
 fn non_empty(text: Option<String>) -> Option<String> {
@@ -108,6 +110,7 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
         board: draft.board,
         agents,
         steps,
+        layout: draft.layout,
     }
 }
 
@@ -139,6 +142,7 @@ pub fn create_workflow(dirs: &Dirs, name: &str) -> Result<Workflow> {
         offer_in_tracket: false,
         max_parallel_runs: 1,
         board: true,
+        layout: Default::default(),
         agents: Default::default(),
         steps: vec![step],
     };
@@ -283,6 +287,7 @@ mod tests {
             offer_in_tracket: false,
             max_parallel_runs: 3,
             board: true,
+            layout: Default::default(),
             steps: vec![
                 step("plan", StepKind::Agent, Some("planner"), None, None),
                 step("review", StepKind::Approval, None, Some("steps.plan.output"), Some("plan")),
@@ -299,6 +304,7 @@ mod tests {
             offer_in_tracket: false,
             max_parallel_runs: 1,
             board: true,
+            layout: Default::default(),
             steps: vec![step("plan", StepKind::Agent, Some("nobody"), None, None)],
         };
         assert!(save_workflow(&dirs, "fix-a-bug", broken).unwrap_err().message.contains("doesn't exist"));

@@ -14,6 +14,7 @@ Windows only for now.
     `steps.triage.output.risky and steps.triage.output.severity == "high"`.
   - A For each takes every item of a list through its steps, one at a time or a few in parallel, and stops or goes
     on when an item fails.
+  - Parallel branches run at the same time, and the step after them waits for all of them.
   - An action does one thing in another tool (a Jira comment or status change, a Slack message) through a small
     agent that has the MCP server for it.
   - An approval step waits until someone approves it. Rejecting it can send the run back to an earlier step
@@ -38,7 +39,16 @@ Windows only for now.
 
     Above them sit Cancel run, Open in Jira and Run again, and a run can be started by hand.
   - Workflows: an editor drawn like the canvas: a condition's `no` branch in a column on the right, a loop's steps
-    in a dashed frame. Add agent steps, conditions, loops, approvals and actions, then set each one in the
+    in a dashed frame, parallel branches side by side. Drag the background to pan, scroll or use the buttons to
+    zoom. Drag nodes to place them: the positions are kept in the workflow file (`layout:`), and Reset layout
+    goes back to the automatic one. Drag a node's bottom dot onto another node to link them: it runs next, or
+    alongside what already runs next (a parallel branch); an approval dragged onto an earlier step gets its
+    rejection link. The inspector lists each node's links, deletes any of them, and links by keyboard. Deleting a
+    link into a step leaves it and the steps after it "Not linked" until they are linked again. Any link can be
+    deleted while editing; Save stays off until the graph is complete again, and hovering it lists what is
+    missing. Click a link to select it. Keys: Delete or Backspace deletes the selected link or node, the arrows
+    move the selected node (Shift: further), Escape leaves the link, Ctrl+Z and Ctrl+Y undo and redo, Ctrl+S saves. Deleting a workflow or an agent type,
+    or leaving unsaved edits, asks first. Add agent steps, conditions, loops, approvals and actions, then set each one in the
     inspector: its name, agent type, input, instructions, JSON output fields, an expression, the items of a loop and
     how many at once, what an approval shows and where a rejection goes, what an action does. Steps can be moved and deleted, and you
     can edit the workflow's name, description and run limit. New, Save, Discard and Delete are there too. Save checks

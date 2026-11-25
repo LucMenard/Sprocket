@@ -464,6 +464,14 @@ fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out
             block(conn, run, if branch == "then" { &step.then } else { &step.otherwise }, scope, out)
         }
         StepKind::ForEach => for_each(conn, run, step, scope, job, out),
+        // No job of its own: its state is its branches'. Every branch is driven, so all of them start
+        StepKind::Parallel => {
+            let mut statuses = Vec::with_capacity(step.branches.len());
+            for lane in &step.branches {
+                statuses.push(block(conn, run, lane, scope, out)?);
+            }
+            Ok([Status::Busy, Status::Interrupted, Status::Failed].into_iter().find(|s| statuses.contains(s)).unwrap_or(Status::Done))
+        }
     }
 }
 

@@ -1,16 +1,57 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { Redo2, Undo2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { FlowGraph, KindIcon } from '@/components/FlowGraph'
-import { designSub, KINDS, workflowFlow } from '@/lib/flow'
+import { designSub, edgeKey, KINDS, workflowFlow } from '@/lib/flow'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { useAgents } from '@/features/agents/useAgents'
 import { api, type AgentType, type AppError, type StepKind, type Workflow } from '@/lib/api'
 import { allSteps, findPlace } from '@/lib/steps'
-import { useWorkflowDraft } from './useWorkflowDraft'
+import { draftProblems, useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
 const PALETTE: StepKind[] = ['agent', 'condition', 'forEach', 'approval', 'action']
+
+/**
+ * Save, off while there is nothing to save or the graph isn't complete. Hovering it (or focusing it) says what
+ * is missing; a disabled button can't show a tooltip, so it stays focusable and refuses the click itself.
+ */
+function SaveButton({ dirty, busy, blockers, onSave }: { dirty: boolean; busy: boolean; blockers: string[]; onSave: () => void }) {
+  const [open, setOpen] = useState(false)
+  const blocked = blockers.length > 0
+  const off = !dirty || busy || blocked
+  return (
+    <span className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className="ct-btn ct-btn-primary aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+        aria-disabled={off}
+        aria-describedby={blocked ? 'save-blockers' : undefined}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => !off && onSave()}
+      >
+        Save
+      </button>
+      {blocked && (
+        <div
+          id="save-blockers"
+          role="tooltip"
+          className={`ct-card absolute top-full right-0 z-40 mt-2 w-80 flex-col gap-1.5 p-3 text-[13px] shadow-lg ${open ? 'flex' : 'hidden'}`}
+        >
+          <strong className="font-semibold">Can't save yet</strong>
+          <ul className="flex list-disc flex-col gap-1 pl-4 text-ct-text-2">
+            {blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </span>
+  )
+}
 
 export function WorkflowsView() {
   const queryClient = useQueryClient()
@@ -21,17 +62,43 @@ export function WorkflowsView() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [nodeByWorkflow, setNodeByWorkflow] = useState<Record<string, string>>({})
   const [newName, setNewName] = useState<string | null>(null)
+  // What waits for a yes: deleting this workflow, or leaving its unsaved edits for another one
+  const [confirming, setConfirming] = useState<{ type: 'delete' } | { type: 'leave'; to: string } | null>(null)
+  const [linkError, setLinkError] = useState<string | null>(null)
   const saved = workflows.find((w) => w.id === selectedId) ?? workflows[0]
   const editing = useWorkflowDraft(saved)
   const draft = editing.draft
   const node = saved ? (nodeByWorkflow[saved.id] ?? draft?.steps[0]?.id ?? '$trigger') : '$trigger'
-  const select = (id: string) => saved && setNodeByWorkflow((m) => ({ ...m, [saved.id]: id }))
+  // A selected link (its `edgeKey`), instead of a node
+  const [link, setLink] = useState<string | null>(null)
+  const select = (id: string) => {
+    setLink(null)
+    if (saved) setNodeByWorkflow((m) => ({ ...m, [saved.id]: id }))
+  }
   const flow = draft
-    ? workflowFlow(draft.steps, 'design', (s) => ({ sub: designSub(s) }), {
-        trigger: { sub: 'Manual, from a ticket' },
-        end: { sub: 'Mark the run as passed' },
-      })
+    ? workflowFlow(
+        draft.steps,
+        'design',
+        (s) => ({ sub: designSub(s) }),
+        { trigger: { sub: 'Manual, from a ticket' }, end: { sub: 'Mark the run as passed' } },
+        { positions: draft.layout, loose: draft.loose, cut: draft.cut, invalid: draft.extra },
+      )
     : null
+  const selectedEdge = link ? flow?.edges.find((e) => edgeKey(e) === link) : undefined
+
+  /** Deletes the selected link, or the selected node: Delete in the graph, × in the inspector */
+  const deleteSelected = () => {
+    if (selectedEdge) {
+      setLinkError(editing.deleteLink(selectedEdge))
+      setLink(null)
+      return
+    }
+    if (!draft || node.startsWith('$')) return
+    const before = flow?.nodes[flow.nodes.findIndex((n) => n.id === node) - 1]?.id ?? '$trigger'
+    editing.removeStep(node)
+    select(before)
+  }
+
   // What a step can use: this workflow's own agent types first, then the shared ones
   const agents: AgentType[] = [...(saved?.agents.filter((a) => !a.shared) ?? []), ...shared.filter((a) => !saved?.agents.some((o) => !o.shared && o.id === a.id))]
 
@@ -51,18 +118,53 @@ export function WorkflowsView() {
   const remove = useMutation<void, AppError>({
     mutationFn: () => api.deleteWorkflow(saved!.id),
     onSuccess: () => {
+      setConfirming(null)
       setSelectedId(null)
       reload()
     },
   })
-  const problem = (save.error ?? create.error ?? remove.error)?.message
+  const problem = linkError ?? (save.error ?? create.error ?? remove.error)?.message
+  // What keeps Save off while the graph is being changed: told when hovering it
+  const blockers = draft && editing.dirty ? draftProblems(draft) : []
 
+  // The editor's keys. Not while typing in a field, nor under a dialog
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (confirming || !draft || t?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="alertdialog"]')) return
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      if (mod && key === 'z' && !e.shiftKey) return (e.preventDefault(), editing.undo())
+      if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) return (e.preventDefault(), editing.redo())
+      if (mod && key === 's') {
+        e.preventDefault()
+        if (editing.dirty && !blockers.length && !save.isPending) save.mutate()
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') return (e.preventDefault(), deleteSelected())
+      if (e.key === 'Escape') return setLink(null)
+      const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]
+      const at = flow?.nodes.find((n) => n.id === node)
+      if (step && at && !link) {
+        e.preventDefault()
+        const by = e.shiftKey ? 50 : 10
+        editing.place(node, { x: at.x + step[0] * by, y: at.y + step[1] * by })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const open = (id: string) => {
+    save.reset()
+    setLinkError(null)
+    setSelectedId(id)
+  }
   /** Leaving a workflow with unsaved edits asks first */
   const pick = (id: string) => {
     if (id === saved?.id) return
-    if (editing.dirty && !window.confirm('Discard your changes to this workflow?')) return
-    save.reset()
-    setSelectedId(id)
+    if (editing.dirty) setConfirming({ type: 'leave', to: id })
+    else open(id)
   }
 
   return (
@@ -89,21 +191,27 @@ export function WorkflowsView() {
               type="button"
               className="ct-btn ct-btn-danger"
               disabled={remove.isPending}
-              onClick={() => window.confirm(`Delete the workflow "${saved.name}"? Its past runs are kept.`) && remove.mutate()}
+              onClick={() => (remove.reset(), setConfirming({ type: 'delete' }))}
             >
               Delete
             </button>
             <button type="button" className="ct-btn" onClick={() => void api.openWorkflowFile(saved.file)}>
               Open file
             </button>
+            <div role="group" aria-label="History" className="flex">
+              <button type="button" className="ct-btn ct-btn-ghost px-2.5" aria-label="Undo (Ctrl+Z)" title="Undo (Ctrl+Z)" disabled={!editing.canUndo} onClick={editing.undo}>
+                <Undo2 className="size-4" />
+              </button>
+              <button type="button" className="ct-btn ct-btn-ghost px-2.5" aria-label="Redo (Ctrl+Y)" title="Redo (Ctrl+Y)" disabled={!editing.canRedo} onClick={editing.redo}>
+                <Redo2 className="size-4" />
+              </button>
+            </div>
             {editing.dirty && (
               <button type="button" className="ct-btn" onClick={() => (save.reset(), editing.discard())}>
                 Discard
               </button>
             )}
-            <button type="button" className="ct-btn ct-btn-primary" disabled={!editing.dirty || save.isPending} onClick={() => save.mutate()}>
-              Save
-            </button>
+            <SaveButton dirty={editing.dirty} busy={save.isPending} blockers={blockers} onSave={() => save.mutate()} />
           </div>
         )}
       </div>
@@ -164,7 +272,7 @@ export function WorkflowsView() {
                       // After the selected node, next to it: first after the trigger, last before the end
                       const place = findPlace(draft.steps, node)
                       const slot = place
-                        ? { parent: place.parent?.id ?? null, branch: place.branch, index: place.index + 1 }
+                        ? { parent: place.parent?.id ?? null, branch: place.branch, lane: place.lane, index: place.index + 1 }
                         : { parent: null, branch: null, index: node === '$trigger' ? 0 : draft.steps.length }
                       // An action is best done by an agent that has MCP servers
                       const agent = kind === 'action' ? (agents.find((a) => a.mcp.length) ?? agents[0]) : agents[0]
@@ -217,13 +325,28 @@ export function WorkflowsView() {
         </ResizablePanel>
         <ResizableHandle />
         <ResizablePanel id="wf-graph" defaultSize="50%" minSize="28%">
-          <main className="ct-canvas relative h-full overflow-auto">
+          <main className="ct-canvas relative h-full overflow-hidden">
             {flow && (
-              <>
-                <div className="py-6">
-                  <FlowGraph mode="design" flow={flow} selected={node} onSelect={select} />
-                </div>
-                <div className="ct-card sticky bottom-3.5 left-3.5 ml-3.5 inline-flex items-center gap-2 px-3 py-2 text-[13px]">
+              <FlowGraph
+                key={saved?.id}
+                mode="design"
+                flow={flow}
+                selected={node}
+                onSelect={select}
+                onConnect={(from, to) => {
+                  const why = editing.connect(from, to)
+                  setLinkError(why)
+                  if (!why) select(to)
+                }}
+                onPlace={(id, at) => {
+                  editing.place(id, at)
+                  select(id)
+                }}
+                onResetLayout={Object.keys(draft?.layout ?? {}).length ? editing.resetLayout : undefined}
+                selectedLink={link}
+                onSelectLink={setLink}
+              >
+                <div className="ct-card inline-flex items-center gap-2 px-3 py-2 text-[13px]">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ct-pill-pass)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <circle cx="12" cy="12" r="9" />
                     <path d="M8 12.5l2.5 2.5L16 9.5" />
@@ -232,17 +355,59 @@ export function WorkflowsView() {
                     <strong className="font-semibold">{editing.dirty ? 'Checked on save' : 'Valid'}</strong> · {flow.nodes.length} nodes · {flow.edges.length} links
                   </span>
                 </div>
-              </>
+              </FlowGraph>
             )}
           </main>
         </ResizablePanel>
         <ResizableHandle />
         <ResizablePanel id="wf-inspector" defaultSize="28%" minSize="20%">
           <aside aria-label="Node settings" className="h-full overflow-y-auto bg-ct-surface px-4 py-[18px]">
-            {draft && <WorkflowInspector draft={draft} editing={editing} node={node} agents={agents} onSelect={select} />}
+            {draft && flow && (
+              <WorkflowInspector
+                draft={draft}
+                editing={editing}
+                node={node}
+                agents={agents}
+                flow={flow}
+                link={selectedEdge}
+                onSelect={select}
+                onSelectLink={setLink}
+                onDeleteLink={deleteSelected}
+                onLinkError={setLinkError}
+              />
+            )}
           </aside>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {confirming?.type === 'delete' && saved && (
+        <ConfirmDialog
+          title={`Delete the workflow "${saved.name}"?`}
+          confirm="Delete workflow"
+          danger
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setConfirming(null)}
+        >
+          <p>Its file is deleted. Its past runs are kept, and runs still going finish with the workflow they started with.</p>
+          {remove.error && <p className="mt-2 text-ct-failed">{remove.error.message}</p>}
+        </ConfirmDialog>
+      )}
+      {confirming?.type === 'leave' && (
+        <ConfirmDialog
+          title="Discard your changes?"
+          confirm="Discard changes"
+          danger
+          onConfirm={() => {
+            const to = confirming.to
+            setConfirming(null)
+            editing.discard()
+            open(to)
+          }}
+          onCancel={() => setConfirming(null)}
+        >
+          <p>This workflow has changes that aren't saved.</p>
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

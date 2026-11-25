@@ -160,8 +160,8 @@ export function RunsView() {
             <ResizablePanel id="runs-graph" defaultSize="50%" minSize="28%">
               <div className="flex h-full flex-col gap-4 px-6 py-5">
                 <RunFacts run={run} />
-                <div className="ct-canvas min-h-0 flex-1 overflow-auto rounded-[10px] border border-ct-border">
-                  <FlowGraph mode="run" flow={runFlow(run)} selected={node} onSelect={(id) => {
+                <div className="ct-canvas min-h-0 flex-1 overflow-hidden rounded-[10px] border border-ct-border">
+                  <FlowGraph key={run.id} mode="run" flow={runFlow(run)} selected={node} onSelect={(id) => {
                       setNodeByRun((m) => ({ ...m, [run.id]: id }))
                       setPane('step')
                     }} />

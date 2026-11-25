@@ -1,7 +1,7 @@
 import { Plus, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { KindIcon } from '@/components/FlowGraph'
-import { KINDS, type FlowKind } from '@/lib/flow'
+import { edgeKey, KINDS, type Flow, type FlowEdge, type FlowKind } from '@/lib/flow'
 import type { ActionKind, AgentType, OutputType, WorkflowDraft, WorkflowStep } from '@/lib/api'
 import { findPlace, readable } from '@/lib/steps'
 import type { WorkflowEditing } from './useWorkflowDraft'
@@ -60,6 +60,132 @@ function AgentSelect({ id, value, agents, onChange }: { id: string; value: strin
 }
 
 /**
+ * The node's links, as the canvas's inspector lists them: in and out, with the other node and the label. The
+ * ones that can go have a delete button (a rejection, a parallel branch, a condition's branch); the others follow
+ * from the order of the steps. "Link to" does what dragging a port does.
+ */
+function Links({
+  flow,
+  node,
+  editing,
+  onSelect,
+  onSelectLink,
+  onLinkError,
+}: {
+  flow: Flow
+  node: string
+  editing: WorkflowEditing
+  onSelect: (id: string) => void
+  onSelectLink: (key: string) => void
+  onLinkError: (why: string | null) => void
+}) {
+  const title = (id: string) => flow.nodes.find((n) => n.id === id)?.title ?? id
+  const links = flow.edges.filter((e) => e.from === node || e.to === node)
+  const targets = flow.nodes.filter((n) => n.id !== node && n.id !== '$trigger' && n.id !== '$end')
+  return (
+    <div className="flex flex-col gap-2 border-t border-ct-border pt-3.5">
+      <span className="text-[13px] font-semibold">Links</span>
+      {links.length === 0 && <p className="text-[13px] text-ct-text-3">Not connected yet. Drag from a port to link it.</p>}
+      <ul className="flex flex-col gap-1">
+        {links.map((e, i) => {
+          const out = e.from === node
+          const other = out ? e.to : e.from
+          return (
+            <li key={`${e.from}-${e.to}-${i}`} className="flex min-h-8 items-center gap-2 text-[13px]">
+              <span className="rounded-[10px] bg-ct-subtle px-2 py-px text-[11px] font-semibold text-ct-text-3">{out ? 'out' : 'in'}</span>
+              <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" title="Select this link" onClick={() => onSelectLink(edgeKey(e))}>
+                {title(other)}
+              </button>
+              {e.label && <span className="text-ct-text-3">{e.label}</span>}
+              <button
+                type="button"
+                className="ct-btn ct-btn-ghost h-7 px-1.5"
+                aria-label={`Delete the link ${out ? 'to' : 'from'} ${title(other)}`}
+                title={
+                  e.link?.type === 'reject'
+                    ? 'No going back on a rejection'
+                    : e.link?.type === 'next'
+                      ? 'Unlink it: it and the steps after it wait until you link them again'
+                      : e.link
+                        ? 'Run it after, instead of alongside'
+                        : 'Delete it: link them again before saving'
+                }
+                onClick={() => onLinkError(editing.deleteLink(e))}
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      {node !== '$end' && (
+        <select
+          aria-label="Link to another node"
+          className="ct-input h-9"
+          value=""
+          onChange={(ev) => {
+            if (!ev.target.value) return
+            const why = editing.connect(node, ev.target.value)
+            onLinkError(why)
+            if (!why) onSelect(ev.target.value)
+          }}
+        >
+          <option value="">Link to…</option>
+          {targets.map((n) => (
+            <option key={n.id} value={n.id}>
+              {n.title}
+            </option>
+          ))}
+        </select>
+      )}
+      <span className="text-xs text-ct-text-3">
+        A node linked after this one runs next; with two or more, they run at the same time and the next step waits for all of them.
+      </span>
+    </div>
+  )
+}
+
+/** The selected link: where it goes, what it is, and deleting it. */
+function LinkPanel({ flow, link, onSelect, onDelete }: { flow: Flow; link: FlowEdge; onSelect: (id: string) => void; onDelete: () => void }) {
+  const title = (id: string) => flow.nodes.find((n) => n.id === id)?.title ?? id
+  const what = link.invalid
+    ? "The workflow can't hold this link, so it can't be saved while it is here. Delete it."
+    : link.link?.type === 'reject'
+      ? 'Where a rejection sends the run back to.'
+      : link.link?.type === 'lane'
+        ? 'A parallel branch: it runs at the same time as the others. Deleting it runs it after them instead.'
+        : link.link?.type === 'branch'
+          ? "A condition's branch. Deleting it runs the branch's steps right after the condition."
+          : link.link
+            ? 'Deleting it unlinks the next node and the ones after it, until you link them again.'
+            : 'It follows from the other links: when the steps before it are done, the run goes on. Deleting it leaves a gap to link again before saving.'
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-0.5">
+        <span className="ct-eyebrow">Link</span>
+        <span className="text-base font-bold">
+          {title(link.from)} → {title(link.to)}
+        </span>
+        {link.label && <span className="text-[13px] text-ct-text-3">{link.label}</span>}
+      </div>
+      <p className="text-[13px] leading-normal text-ct-text-2">{what}</p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="ct-btn ct-btn-sm" onClick={() => onSelect(link.from)}>
+          Go to {title(link.from)}
+        </button>
+        <button type="button" className="ct-btn ct-btn-sm" onClick={() => onSelect(link.to)}>
+          Go to {title(link.to)}
+        </button>
+        <button type="button" className="ct-btn ct-btn-sm ct-btn-danger ml-auto" onClick={onDelete}>
+          Delete link
+        </button>
+      </div>
+      <p className="text-xs text-ct-text-3">Del deletes it · Esc goes back to the node · Ctrl+Z undoes</p>
+    </div>
+  )
+}
+
+/**
  * The selected node's settings, as in the canvas's inspector. Changes go to the draft; Save in the toolbar
  * writes the file, after the same checks as loading it.
  */
@@ -68,16 +194,31 @@ export function WorkflowInspector({
   editing,
   node,
   agents,
+  flow,
+  link,
   onSelect,
+  onSelectLink,
+  onDeleteLink,
+  onLinkError,
 }: {
   draft: WorkflowDraft
   editing: WorkflowEditing
   node: string
   /** The agent types a step can use: shared ones and this workflow's own */
   agents: AgentType[]
+  /** The graph as drawn, for the node's links */
+  flow: Flow
+  /** A selected link: shown instead of the node */
+  link?: FlowEdge
   onSelect: (id: string) => void
+  onSelectLink: (key: string) => void
+  onDeleteLink: () => void
+  onLinkError: (why: string | null) => void
 }) {
-  const place = findPlace(draft.steps, node)
+  if (link) return <LinkPanel flow={flow} link={link} onSelect={onSelect} onDelete={onDeleteLink} />
+  // Linked or not: a node waiting to be linked again has its settings too
+  const findAnywhere = (id: string) => findPlace(draft.steps, id) ?? draft.loose.reduce<ReturnType<typeof findPlace>>((f, chain) => f ?? findPlace(chain, id), null)
+  const place = findAnywhere(node)
   const step = place?.step
   const kind: FlowKind = node === '$trigger' ? 'trigger' : node === '$end' ? 'end' : (step?.kind ?? 'agent')
   const title = node === '$trigger' ? 'Tracket' : node === '$end' ? 'Done' : node
@@ -145,7 +286,7 @@ export function WorkflowInspector({
               value={step.id}
               onChange={(e) => {
                 const id = e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
-                if (!id || findPlace(draft.steps, id)) return
+                if (!id || findAnywhere(id)) return
                 editing.setStep(step.id, { id })
                 onSelect(id)
               }}
@@ -369,6 +510,7 @@ export function WorkflowInspector({
           )}
 
           <Readable refs={refs} />
+          <Links flow={flow} node={node} editing={editing} onSelect={onSelect} onSelectLink={onSelectLink} onLinkError={onLinkError} />
 
           <div className="flex flex-wrap gap-2 border-t border-ct-border pt-3.5">
             <button type="button" className="ct-btn ct-btn-sm" disabled={place.index === 0} onClick={() => editing.moveStep(step.id, -1)}>
