@@ -1,0 +1,20 @@
+{
+  "name": "sprocket-agent-host",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sprocket's agent host: runs Agent SDK sessions for the Rust core, NDJSON over stdio.",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.331",
+    "sprocket": "file:.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "~5.9.0"
+  }
+}
