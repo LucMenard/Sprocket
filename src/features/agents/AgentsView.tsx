@@ -11,7 +11,7 @@ import { agentOf, allSteps } from '@/lib/steps'
 import { AgentEditor } from './AgentEditor'
 import { useAgents } from './useAgents'
 
-const NEW_AGENT = { description: null, model: 'claude-sonnet-5-5', ask: 'before-writes' as const, tools: [], mcp: [], instructions: null, board: true }
+const NEW_AGENT = { description: null, model: 'claude-sonnet-5-5', ask: 'before-writes' as const, tools: [], mcp: [], instructions: null, board: true, colleagues: true }
 
 export function AgentsView() {
   const queryClient = useQueryClient()

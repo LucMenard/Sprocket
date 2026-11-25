@@ -12,6 +12,7 @@ export function draftOf(w: Workflow): WorkflowDraft {
     board: w.board,
     steps: structuredClone(w.steps),
     layout: structuredClone(w.layout ?? {}),
+    colleagues: structuredClone(w.colleagues ?? { canAsk: [], maxAsks: 3 }),
     loose: [],
     cut: [],
     extra: [],

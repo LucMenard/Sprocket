@@ -40,6 +40,9 @@ pub struct FileAgent {
     /// Whether it may post to its run's board; it can always read it. Yes when left out
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub board: bool,
+    /// Whether it may ask other agent types a question (`ask_agent`). Yes when left out
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub colleagues: bool,
 }
 
 fn yes() -> bool {
@@ -66,6 +69,9 @@ pub struct AgentType {
     /// May post to the run's board (it can always read it)
     #[serde(default = "yes")]
     pub board: bool,
+    /// May ask other agent types a question
+    #[serde(default = "yes")]
+    pub colleagues: bool,
     /// True for a shared agent type (agents/<id>.yaml), false for one defined in a workflow file
     #[serde(default)]
     pub shared: bool,
@@ -82,6 +88,7 @@ impl AgentType {
             mcp: a.mcp,
             instructions: a.instructions,
             board: a.board,
+            colleagues: a.colleagues,
             shared,
         }
     }
@@ -95,6 +102,7 @@ impl AgentType {
             mcp: self.mcp.clone(),
             instructions: self.instructions.clone().filter(|i| !i.trim().is_empty()),
             board: self.board,
+            colleagues: self.colleagues,
         }
     }
 }

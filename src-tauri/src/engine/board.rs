@@ -107,7 +107,7 @@ fn asker(conn: &Connection, job_id: &str) -> Result<(Job, RunRow, Option<String>
     if !run.wf.board {
         return Err(AppError::new("conflict", "This workflow has no board"));
     }
-    let agent = run.wf.find(&job.step_id).and_then(|p| p.step.agent.clone());
+    let agent = super::colleagues::agent_of(&run, &job);
     Ok((job, run, agent))
 }
 

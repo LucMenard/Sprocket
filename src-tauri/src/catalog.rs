@@ -82,6 +82,9 @@ pub struct WorkflowDraft {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub layout: std::collections::BTreeMap<String, workflow::Point>,
+    /// None: the default (the agent types the steps use, 3 asks a step)
+    #[serde(default)]
+    pub colleagues: Option<workflow::Colleagues>,
 }
 
 fn non_empty(text: Option<String>) -> Option<String> {
@@ -100,7 +103,31 @@ fn read_workflow_file(path: &Path) -> Result<FileWorkflow> {
     serde_yaml::from_str(&text).map_err(|e| invalid(format!("The file can't be read: {e}")))
 }
 
+/// What the file says about colleagues: only what differs from the defaults.
+fn colleagues_file(c: Option<workflow::Colleagues>, used: &[String]) -> Option<workflow::FileColleagues> {
+    let c = c?;
+    let mut by_default = used.to_vec();
+    by_default.sort();
+    by_default.dedup();
+    let mut asked = c.can_ask.clone();
+    asked.sort();
+    asked.dedup();
+    let file = workflow::FileColleagues {
+        can_ask: (asked != by_default).then_some(c.can_ask),
+        max_asks: (c.max_asks != workflow::DEFAULT_ASKS).then_some(c.max_asks),
+    };
+    (file != workflow::FileColleagues::default()).then_some(file)
+}
+
 fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, FileAgent>) -> FileWorkflow {
+    fn agents_of(steps: &[Step], out: &mut Vec<String>) {
+        for s in steps {
+            out.extend(s.agent.clone());
+            agents_of(&s.children().cloned().collect::<Vec<_>>(), out);
+        }
+    }
+    let mut used_agents = Vec::new();
+    agents_of(&draft.steps, &mut used_agents);
     let steps = draft.steps.iter().map(Step::to_file).collect();
     FileWorkflow {
         name: draft.name.trim().to_string(),
@@ -111,6 +138,7 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
         agents,
         steps,
         layout: draft.layout,
+        colleagues: colleagues_file(draft.colleagues, &used_agents),
     }
 }
 
@@ -143,6 +171,7 @@ pub fn create_workflow(dirs: &Dirs, name: &str) -> Result<Workflow> {
         max_parallel_runs: 1,
         board: true,
         layout: Default::default(),
+        colleagues: None,
         agents: Default::default(),
         steps: vec![step],
     };
@@ -167,6 +196,8 @@ pub struct AgentDraft {
     pub instructions: Option<String>,
     #[serde(default = "yes")]
     pub board: bool,
+    #[serde(default = "yes")]
+    pub colleagues: bool,
 }
 
 fn yes() -> bool {
@@ -203,6 +234,7 @@ fn draft_file(draft: AgentDraft) -> FileAgent {
         mcp: clean(draft.mcp),
         instructions: non_empty(draft.instructions),
         board: draft.board,
+        colleagues: draft.colleagues,
     }
 }
 
@@ -288,6 +320,7 @@ mod tests {
             max_parallel_runs: 3,
             board: true,
             layout: Default::default(),
+            colleagues: None,
             steps: vec![
                 step("plan", StepKind::Agent, Some("planner"), None, None),
                 step("review", StepKind::Approval, None, Some("steps.plan.output"), Some("plan")),
@@ -305,6 +338,7 @@ mod tests {
             max_parallel_runs: 1,
             board: true,
             layout: Default::default(),
+            colleagues: None,
             steps: vec![step("plan", StepKind::Agent, Some("nobody"), None, None)],
         };
         assert!(save_workflow(&dirs, "fix-a-bug", broken).unwrap_err().message.contains("doesn't exist"));
@@ -356,13 +390,37 @@ mod tests {
     }
 
     #[test]
+    fn writes_colleague_settings_only_when_not_the_defaults() {
+        let (_d, dirs) = dirs();
+        let wf = workflow::load_all(&dirs.workflows).unwrap().workflows.remove(0);
+        let draft = |c: workflow::Colleagues| WorkflowDraft {
+            name: wf.name.clone(),
+            description: String::new(),
+            offer_in_tracket: true,
+            max_parallel_runs: 1,
+            board: true,
+            steps: wf.steps.clone(),
+            layout: Default::default(),
+            colleagues: Some(c),
+        };
+        // The defaults (the steps' agent types, 3 asks): nothing in the file
+        save_workflow(&dirs, "fix-a-bug", draft(wf.colleagues.clone())).unwrap();
+        let text = std::fs::read_to_string(dirs.workflows.join("fix-a-bug.yaml")).unwrap();
+        assert!(!text.contains("colleagues"));
+        let saved = save_workflow(&dirs, "fix-a-bug", draft(workflow::Colleagues { can_ask: vec!["builder".into()], max_asks: 2 })).unwrap();
+        assert_eq!(saved.colleagues, workflow::Colleagues { can_ask: vec!["builder".into()], max_asks: 2 });
+        let text = std::fs::read_to_string(dirs.workflows.join("fix-a-bug.yaml")).unwrap();
+        assert!(text.contains("canAsk:") && text.contains("maxAsks: 2"));
+    }
+
+    #[test]
     fn creates_named_workflows_and_agent_types_and_deletes_only_unused_ones() {
         let (_d, dirs) = dirs();
         let a = create_workflow(&dirs, "Review a PR!").unwrap();
         let b = create_workflow(&dirs, "Review a PR").unwrap();
         assert_eq!((a.id.as_str(), b.id.as_str()), ("review-a-pr", "review-a-pr-2"));
 
-        let draft = || AgentDraft { description: None, model: "claude-haiku-5-5".into(), ask: AskPolicy::EveryAction, tools: vec!["Read".into()], mcp: vec![], instructions: None, board: true };
+        let draft = || AgentDraft { description: None, model: "claude-haiku-5-5".into(), ask: AskPolicy::EveryAction, tools: vec!["Read".into()], mcp: vec![], instructions: None, board: true, colleagues: true };
         save_agent(&dirs, "reviewer", draft(), true).unwrap();
         assert_eq!(save_agent(&dirs, "reviewer", draft(), true).unwrap_err().kind, "conflict");
         assert_eq!(save_agent(&dirs, "Bad Name", draft(), true).unwrap_err().kind, "invalid");

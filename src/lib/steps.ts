@@ -128,4 +128,6 @@ export function stepState(run: Run, stepId: string): JobState | 'pending' {
 }
 
 /** The agent type of a step, wherever it is in the workflow. */
-export const agentOf = (steps: WorkflowStep[], stepId: string) => findPlace(steps, stepId)?.step.agent ?? null
+// An ask's step id is `<asking step>~<agent type>`
+export const agentOf = (steps: WorkflowStep[], stepId: string) =>
+  stepId.includes('~') ? stepId.split('~')[1] : (findPlace(steps, stepId)?.step.agent ?? null)

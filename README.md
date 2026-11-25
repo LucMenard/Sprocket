@@ -27,6 +27,10 @@ Windows only for now.
     tools the agent host serves itself. You read and post on it from Runs or from Tracket, and a rejection's reason
     lands there for the step that redoes the work. A workflow can turn its board off, and an agent type can be
     kept to reading it.
+  - An agent can **ask a colleague**: `ask_agent(agentType, question)` runs a short session of that agent type in
+    the same worktree, and its answer comes back to the agent. The workflow says who may be asked (the agent types
+    its steps use, by default) and how many times a step may ask (3); an agent type can be kept from asking. The
+    asked one can't ask in turn. Runs shows each step's asks, with the question, the answer and the session.
 - **Screens**, laid out like the mockup (canvas "Task & Agent Tracker", page V2) in Tracket's look:
   - Overview: counters, "Waiting on you" (approve, or reject with a reason), runs with their step dots, the agents
     at work and the recent events.

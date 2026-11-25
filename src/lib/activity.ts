@@ -36,6 +36,12 @@ export function describe(what: string, detail: string | null): string {
       return `Tool denied by ${d}`
     case 'note.posted':
       return `Note on the board from ${d}`
+    case 'colleague.asked':
+      return `Asked ${d}`
+    case 'colleague.answered':
+      return `${d} answered`
+    case 'colleague.failed':
+      return `${d} couldn't answer`
     default:
       return d ? `${what}: ${d}` : what
   }

@@ -2,7 +2,7 @@
 // host → core on stdout. Nothing else may be written to stdout; logs go to stderr.
 // The Rust side mirrors these in src-tauri/src/host/protocol.rs. Bump PROTOCOL when either changes.
 
-export const PROTOCOL = 3
+export const PROTOCOL = 4
 
 export type AskPolicy = 'never' | 'before-writes' | 'every-action'
 
@@ -16,6 +16,8 @@ export interface AgentSpec {
   instructions: string | null
   /** The run's board: no tools, reading only, or reading and posting */
   board: BoardAccess
+  /** The agent types it may ask with ask_agent; none: no such tool */
+  colleagues: { id: string; description: string | null }[]
 }
 
 export type BoardAccess = 'off' | 'read' | 'post'
@@ -29,6 +31,7 @@ export type CoreMessage =
   | { type: 'job.stop'; jobId: string }
   | { type: 'tool.answer'; askId: string; behavior: 'allow' | 'deny'; message?: string }
   | { type: 'board.answer'; requestId: string; text: string; error: boolean }
+  | { type: 'colleague.answer'; requestId: string; text: string; error: boolean }
 
 export type HostMessage =
   | { type: 'host.ready'; protocol: number; sdk: string; claudeCode: string }
@@ -48,3 +51,4 @@ export type HostMessage =
   | { type: 'tool.ask'; askId: string; jobId: string; toolName: string; input: unknown }
   | { type: 'board.post'; requestId: string; jobId: string; message: string; to?: string }
   | { type: 'board.read'; requestId: string; jobId: string; since?: number }
+  | { type: 'colleague.ask'; requestId: string; jobId: string; agentType: string; question: string }

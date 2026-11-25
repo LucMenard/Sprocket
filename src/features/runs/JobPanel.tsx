@@ -59,6 +59,41 @@ export function RunEndsPanel({ run, which }: { run: Run; which: 'trigger' | 'end
   )
 }
 
+/** What a job asked other agent types: the question, who, and the answer (or how far it got). */
+function Asks({ run, parent }: { run: Run; parent: Job }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const asks = run.jobs.filter((j) => j.kind === 'ask' && j.parentJob === parent.id)
+  if (!asks.length) return null
+  const shown = asks.find((a) => a.id === open)
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-semibold">Asked colleagues</span>
+      <ol className="flex flex-col gap-2">
+        {asks.map((a) => (
+          <li key={a.id} className="flex flex-col gap-1.5 rounded-lg border border-ct-border p-2.5 text-[13px]">
+            <span className="flex items-center gap-2">
+              <StateDot state={a.state} size={10} />
+              <strong className="font-semibold">{a.stepId.split('~')[1]}</strong>
+              <span className="text-xs text-ct-text-3">{stateLabel(a.state)}</span>
+              <button type="button" className="ml-auto text-xs underline underline-offset-2" onClick={() => setOpen(a.id)}>
+                Session
+              </button>
+            </span>
+            <p className="text-ct-text-2">{a.question}</p>
+            {a.output && <pre className="max-h-40 overflow-auto rounded-md bg-ct-subtle p-2 text-xs whitespace-pre-wrap ct-mono">{a.output}</pre>}
+            {a.error && <p className="text-xs" style={{ color: 'var(--ct-pill-fail)' }}>{a.error}</p>}
+          </li>
+        ))}
+      </ol>
+      {shown && (
+        <Dialog title={`${shown.stepId.split('~')[1]} · asked by ${parent.stepId}`} onClose={() => setOpen(null)}>
+          <Transcript jobId={shown.id} live={shown.state === 'running' || shown.state === 'waiting'} />
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
 /** The selected step: its job (in a loop, one per item; an earlier attempt), what it waits for, its log and session. */
 export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
   const queryClient = useQueryClient()
@@ -81,7 +116,8 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
   if (!step || !place) return null
 
   const runsAgent = step.kind === 'agent' || step.kind === 'action'
-  const approvals = run.approvals.filter((a) => a.jobId === job?.id)
+  // Its own, and its colleagues' (an asked agent wanting to use a tool)
+  const approvals = run.approvals.filter((a) => a.jobId === job?.id || run.jobs.some((j) => j.id === a.jobId && j.parentJob === job?.id))
   const canRetry =
     !!job &&
     !job.superseded &&
@@ -154,6 +190,8 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
               ))}
             </div>
           )}
+
+          <Asks run={run} parent={job} />
 
           {approvals.map((a) => (
             <ApprovalCard key={a.id} approval={a} run={run} />

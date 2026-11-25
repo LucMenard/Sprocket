@@ -33,11 +33,36 @@ pub struct FileWorkflow {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, FileAgent>,
     pub steps: Vec<FileStep>,
+    /// Asking other agent types (`ask_agent`): who may be asked, and how often per step
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colleagues: Option<FileColleagues>,
     /// Where the editor shows the nodes someone placed by hand, by step (and `$trigger`, `$end`).
     /// Only the editor reads it; the others are laid out automatically
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<String, Point>,
 }
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileColleagues {
+    /// The agent types a step may ask; when left out, those the steps use. Empty: no asking
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_ask: Option<Vec<String>>,
+    /// Asks a step may make; 3 when left out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_asks: Option<u32>,
+}
+
+/// Asking other agent types, checked.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Colleagues {
+    pub can_ask: Vec<String>,
+    pub max_asks: u32,
+}
+
+pub const DEFAULT_ASKS: u32 = 3;
+pub const MAX_ASKS: u32 = 20;
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -327,6 +352,9 @@ pub struct Workflow {
     /// Nodes placed by hand in the editor
     #[serde(default)]
     pub layout: BTreeMap<String, Point>,
+    /// Who the steps may ask, and how often (older runs: nobody)
+    #[serde(default)]
+    pub colleagues: Colleagues,
 }
 
 impl Workflow {
@@ -654,6 +682,20 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
     }
     let mut checker = Checker { own: &w.agents, shared, seen: HashSet::new(), used: Vec::new() };
     let steps = checker.block(w.steps.clone(), &mut Visible::default())?;
+    let file_colleagues = w.colleagues.clone().unwrap_or_default();
+    let can_ask = match file_colleagues.can_ask {
+        Some(names) => {
+            for name in &names {
+                checker.agent("colleagues", name).map_err(|_| format!("`colleagues.canAsk` names `{name}`, which isn't an agent type"))?;
+            }
+            names
+        }
+        None => checker.used.iter().map(|a| a.id.clone()).collect(),
+    };
+    let max_asks = file_colleagues.max_asks.unwrap_or(DEFAULT_ASKS);
+    if !(1..=MAX_ASKS).contains(&max_asks) {
+        return Err(format!("`colleagues.maxAsks` is from 1 to {MAX_ASKS}"));
+    }
     let used = checker.used;
     Ok(Workflow {
         id: id.to_string(),
@@ -665,6 +707,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         file: file.to_string(),
         agents: used,
         // Positions of steps that no longer exist are dropped
+        colleagues: Colleagues { can_ask, max_asks },
         layout: w.layout.into_iter().filter(|(k, _)| k == "$trigger" || k == "$end" || checker_seen(&steps, k)).collect(),
         steps,
     })
@@ -818,6 +861,7 @@ steps:
             agents: BTreeMap::new(),
             steps: w.steps.iter().map(Step::to_file).collect(),
             layout: BTreeMap::new(),
+            colleagues: None,
         };
         let again = parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap();
         assert_eq!(serde_json::to_value(&again.steps).unwrap(), serde_json::to_value(&w.steps).unwrap());

@@ -35,6 +35,8 @@ export interface AgentType {
   instructions: string | null
   /** May post to its run's board (it can always read it) */
   board: boolean
+  /** May ask other agent types a question (ask_agent) */
+  colleagues: boolean
   /** A shared agent type (agents/<id>.yaml), or one defined in a workflow file */
   shared: boolean
 }
@@ -49,7 +51,7 @@ export interface AgentList {
 }
 
 /** What the agent type editor saves */
-export type AgentDraft = Pick<AgentType, 'description' | 'model' | 'ask' | 'tools' | 'mcp' | 'instructions' | 'board'>
+export type AgentDraft = Pick<AgentType, 'description' | 'model' | 'ask' | 'tools' | 'mcp' | 'instructions' | 'board' | 'colleagues'>
 
 /** What the workflow editor saves; the workflow's own agent types are kept from its file */
 export interface WorkflowDraft {
@@ -62,6 +64,8 @@ export interface WorkflowDraft {
   steps: WorkflowStep[]
   /** Nodes placed by hand in the editor, by step id (and `$trigger`, `$end`) */
   layout: Record<string, Point>
+  /** Who the steps may ask with ask_agent, and how many times a step may */
+  colleagues: Colleagues
   /**
    * The editor's own: chains of nodes no link reaches, after a link was deleted. Never saved: the editor won't
    * save while there are any.
@@ -71,6 +75,11 @@ export interface WorkflowDraft {
   cut: string[]
   /** The editor's own: links drawn that the workflow can't hold (`from>to`); saving waits until they go */
   extra: string[]
+}
+
+export interface Colleagues {
+  canAsk: string[]
+  maxAsks: number
 }
 
 export interface Point {
@@ -127,6 +136,7 @@ export interface Workflow {
   maxParallelRuns: number
   board: boolean
   layout: Record<string, Point>
+  colleagues: Colleagues
   file: string
   agents: AgentType[]
   steps: WorkflowStep[]
@@ -155,13 +165,17 @@ export interface Ticket {
 export interface Job {
   id: string
   stepId: string
-  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop'
+  /** `ask`: another agent type answering a question a step asked (its `parentJob`) */
+  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask'
   /** `""` in the workflow itself; `each[2]/` for the third item of the loop `each` */
   scope: string
   /** Redone since (after a rejection or a retry): history only */
   superseded: boolean
   /** A JSON output; a loop's items */
   data: unknown
+  /** For an ask: the job that asked, and its question */
+  parentJob: string | null
+  question: string | null
   state: JobState
   attempt: number
   output: string | null

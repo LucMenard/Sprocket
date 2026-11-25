@@ -138,12 +138,21 @@ export function FlowGraph({
     const zoom = clampZoom(Math.min(1, (el.clientWidth - 32) / flow.width, (el.clientHeight - 32) / flow.height))
     setView({ zoom, x: Math.max(16, (el.clientWidth - flow.width * zoom) / 2), y: 16 })
   }, [flow.width, flow.height])
-  // First look: at 100% when it fits across, centred, from the top
+  // First look: at 100% when it fits across, centred, from the top. Only once the pane has its size: a pane
+  // still being laid out is a few pixels wide, which would shrink the graph to nothing
   useLayoutEffect(() => {
-    if (view || !viewport.current) return
     const el = viewport.current
-    const zoom = clampZoom(Math.min(1, (el.clientWidth - 32) / flow.width))
-    setView({ zoom, x: Math.max(16, (el.clientWidth - flow.width * zoom) / 2), y: 8 })
+    if (view || !el) return
+    const first = () => {
+      if (el.clientWidth < 120) return false
+      const zoom = clampZoom(Math.min(1, (el.clientWidth - 32) / flow.width))
+      setView({ zoom, x: Math.max(16, (el.clientWidth - flow.width * zoom) / 2), y: 8 })
+      return true
+    }
+    if (first()) return
+    const watch = new ResizeObserver(() => first() && watch.disconnect())
+    watch.observe(el)
+    return () => watch.disconnect()
   }, [view, flow.width])
   const v = view ?? { zoom: 1, x: 0, y: 0 }
 

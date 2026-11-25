@@ -2,7 +2,7 @@
 // sent to the core as tool asks.
 import { randomUUID } from 'node:crypto'
 import { query, type CanUseTool, type HookCallback, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk'
-import { BOARD_SERVER, boardServer, BoardRequests, isBoardTool } from './board.ts'
+import { BOARD_SERVER, boardServer, BoardRequests, isBoardTool, needsServer } from './board.ts'
 import type { AgentSpec, CoreMessage, HostMessage, JsonSchema } from './protocol.ts'
 
 /** Tools that only read: "before-writes" lets them through without asking. */
@@ -59,6 +59,7 @@ export class Jobs {
       case 'job.stop':
         return this.running.get(message.jobId)?.abort()
       case 'board.answer':
+      case 'colleague.answer':
         return this.board.answer(message.requestId, { text: message.text, error: message.error })
       case 'tool.answer': {
         const resolve = this.asks.get(message.askId)
@@ -126,10 +127,10 @@ export class Jobs {
       model: agent.model,
       canUseTool,
       ...(agent.tools.length ? { tools: agent.tools } : {}),
-      // The run's board is our own MCP server, in this process
-      ...(agent.board !== 'off' ? { mcpServers: { [BOARD_SERVER]: boardServer(jobId, agent.board, this.board) } } : {}),
+      // The board and ask_agent are our own MCP server, in this process
+      ...(needsServer(agent) ? { mcpServers: { [BOARD_SERVER]: boardServer(jobId, agent, this.board) } } : {}),
       // No MCP server listed: the user's aren't even loaded, which also saves their context
-      ...(agent.mcp.length ? {} : agent.board !== 'off' ? { strictMcpConfig: true } : { disallowedTools: ['mcp__*'] }),
+      ...(agent.mcp.length ? {} : needsServer(agent) ? { strictMcpConfig: true } : { disallowedTools: ['mcp__*'] }),
       ...(agent.instructions
         ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: agent.instructions } }
         : {}),

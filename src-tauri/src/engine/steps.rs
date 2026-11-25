@@ -149,6 +149,11 @@ fn job_from_row(r: &rusqlite::Row) -> rusqlite::Result<Job> {
     })
 }
 
+/// The run a job belongs to (empty when there is no such job).
+fn steps_run_of(conn: &Connection, job_id: &str) -> Result<String> {
+    Ok(conn.query_row("SELECT run_id FROM jobs WHERE id = ?1", [job_id], |r| r.get(0)).optional()?.unwrap_or_default())
+}
+
 pub fn job(conn: &Connection, job_id: &str) -> Result<Option<Job>> {
     Ok(conn.query_row(&format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1"), [job_id], job_from_row).optional()?)
 }
@@ -286,7 +291,7 @@ pub fn label(step: &str, scope: &str) -> String {
 
 // ---- Starting a step ----
 
-fn agent_spec(wf: &Workflow, agent_id: &str) -> Result<AgentSpec> {
+pub fn agent_spec(wf: &Workflow, agent_id: &str) -> Result<AgentSpec> {
     let a = wf
         .agents
         .iter()
@@ -297,7 +302,17 @@ fn agent_spec(wf: &Workflow, agent_id: &str) -> Result<AgentSpec> {
         (true, false) => BoardAccess::Read,
         (true, true) => BoardAccess::Post,
     };
-    Ok(AgentSpec { model: a.model.clone(), ask: a.ask, tools: a.tools.clone(), mcp: a.mcp.clone(), instructions: a.instructions.clone(), board })
+    // Who it may ask: the workflow's colleagues, when its agent type may ask (an ask's own job clears it)
+    let colleagues = if a.colleagues {
+        wf.colleagues
+            .can_ask
+            .iter()
+            .map(|id| crate::host::protocol::Colleague { id: id.clone(), description: wf.agents.iter().find(|x| &x.id == id).and_then(|x| x.description.clone()) })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(AgentSpec { model: a.model.clone(), ask: a.ask, tools: a.tools.clone(), mcp: a.mcp.clone(), instructions: a.instructions.clone(), board, colleagues })
 }
 
 fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, feedback: Option<&str>) -> String {
@@ -329,6 +344,24 @@ fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, fee
     }
     if has_mcp {
         prompt.push_str("Read the ticket (description, comments, linked issues) with your Jira tools when you need its details.\n");
+    }
+    let asker = run.wf.agents.iter().find(|a| Some(a.id.as_str()) == step.agent.as_deref());
+    if asker.is_some_and(|a| a.colleagues) && !run.wf.colleagues.can_ask.is_empty() {
+        let who: Vec<String> = run
+            .wf
+            .colleagues
+            .can_ask
+            .iter()
+            .map(|id| match run.wf.agents.iter().find(|a| &a.id == id).and_then(|a| a.description.as_deref()) {
+                Some(d) => format!("{id} ({d})"),
+                None => id.clone(),
+            })
+            .collect();
+        prompt.push_str(&format!(
+            "You can ask another agent type a question with ask_agent, up to {} times in this step: {}.\n",
+            run.wf.colleagues.max_asks,
+            who.join(", ")
+        ));
     }
     if run.wf.board {
         let posts = run.wf.agents.iter().find(|a| Some(a.id.as_str()) == step.agent.as_deref()).is_none_or(|a| a.board);
@@ -619,7 +652,7 @@ pub fn send_back(conn: &Connection, run: &RunRow, gate: &Job, feedback: String, 
 /// its session when it has one; a condition or loop is worked out again.
 pub fn retry(conn: &Connection, run: &RunRow, job: &Job, out: &mut Out) -> Result<()> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {JOB_COLUMNS} FROM jobs WHERE run_id = ?1 AND superseded = 0 AND state = 'interrupted' AND id != ?2"
+        "SELECT {JOB_COLUMNS} FROM jobs WHERE run_id = ?1 AND superseded = 0 AND state = 'interrupted' AND id != ?2 AND kind != 'ask'"
     ))?;
     let others: Vec<Job> = stmt.query_map([&run.id, &job.id], job_from_row)?.collect::<rusqlite::Result<_>>()?;
     set_run_state(conn, &run.id, "running")?;
@@ -682,6 +715,21 @@ pub fn on_host_message(conn: &Connection, message: HostMessage, out: &mut Out) -
                 return Ok(());
             }
             expire_approvals(conn, &j.run_id, Some(&job_id), false)?;
+            if j.kind == "ask" {
+                // A colleague's answer goes back to the agent that asked; the run doesn't move on
+                if result == "success" {
+                    end_job(conn, &job_id, Ended { output: output.as_deref(), cost: cost_usd, ..Ended::new("done") })?;
+                    activity(conn, &j.run_id, Some(&job_id), "job.done", "answered")?;
+                    super::colleagues::on_answered(conn, &j, Ok(output.as_deref().unwrap_or("(no answer)")), out)?;
+                } else {
+                    let why = error.unwrap_or(result);
+                    end_job(conn, &job_id, Ended { error: Some(&why), cost: cost_usd, ..Ended::new("failed") })?;
+                    activity(conn, &j.run_id, Some(&job_id), "job.failed", &why)?;
+                    super::colleagues::on_answered(conn, &j, Err(why.as_str()), out)?;
+                }
+                return refresh_waiting(conn, &j.run_id);
+            }
+            super::colleagues::stop_asks_of(conn, &job_id, out)?;
             let name = label(&j.step_id, &j.scope);
             if result == "success" {
                 // A JSON output may come with no text: show the JSON
@@ -701,6 +749,10 @@ pub fn on_host_message(conn: &Connection, message: HostMessage, out: &mut Out) -
         HostMessage::BoardRead { request_id, job_id, since } => {
             super::board::on_read(conn, request_id, &job_id, since, out)?;
         }
+        HostMessage::ColleagueAsk { request_id, job_id, agent_type, question } => {
+            super::colleagues::on_ask(conn, request_id, &job_id, &agent_type, &question, out)?;
+            refresh_waiting(conn, &steps_run_of(conn, &job_id)?)?;
+        }
         // Handled by the host supervisor
         HostMessage::Ready { .. } | HostMessage::Error { .. } => {}
     }
@@ -710,7 +762,7 @@ pub fn on_host_message(conn: &Connection, message: HostMessage, out: &mut Out) -
 /// Agent jobs that were running are gone: they become Interrupted, and so do their runs.
 /// Gates are kept: nothing was holding them open.
 pub fn interrupt_all(conn: &Connection, why: &str) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT id, run_id FROM jobs WHERE kind IN ('agent', 'action') AND state IN ('running', 'waiting')")?;
+    let mut stmt = conn.prepare("SELECT id, run_id FROM jobs WHERE kind IN ('agent', 'action', 'ask') AND state IN ('running', 'waiting')")?;
     let jobs: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     for (job_id, run_id) in &jobs {
         activity(conn, run_id, Some(job_id), "job.interrupted", why)?;
@@ -721,7 +773,7 @@ pub fn interrupt_all(conn: &Connection, why: &str) -> Result<()> {
     conn.execute(
         &format!(
             "UPDATE jobs SET state = 'interrupted', error = ?1, ended_at = {NOW}
-             WHERE kind IN ('agent', 'action') AND state IN ('running', 'waiting')"
+             WHERE kind IN ('agent', 'action', 'ask') AND state IN ('running', 'waiting')"
         ),
         [why],
     )?;

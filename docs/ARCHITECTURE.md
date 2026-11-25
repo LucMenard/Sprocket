@@ -231,6 +231,22 @@ The engine works out what runs next from the jobs written so far, after every ch
 branch it took, a loop records its items and starts the next ones as earlier ones finish. Loops are capped at 50
 items and 10 in parallel.
 
+### Asking a colleague
+
+An agent can call `ask_agent(agentType, question)`, a tool of the same `sprocket` server. The host sends
+`colleague.ask` to the core, which checks the workflow allows it (`colleagues.canAsk`: the agent types the steps
+use when left out; `colleagues.maxAsks`: 3 asks a step) and the asking agent type may (`colleagues: false` keeps
+it from asking). It then starts the colleague as a job of its own (`kind: ask`, `parent_job` the asking job, step
+id `<step>~<agent type>`, so the scheduler and Tracket never take it for a step), in the same worktree with the
+run's board. Its answer goes back as `colleague.answer` and is the tool's result. The asked one gets no
+`ask_agent` (no chains); an asking job that ends stops its asks still going.
+
+```yaml
+colleagues:
+  canAsk: [planner, reviewer]
+  maxAsks: 2
+```
+
 ### The board
 
 Every run has a board (`board: false` in a workflow turns it off): notes from its agents and from people, kept in

@@ -319,6 +319,44 @@ export function WorkflowsView() {
                     <span className="text-xs text-ct-text-3">Notes its agents and you share during a run</span>
                   </span>
                 </label>
+                <div className="flex flex-col gap-1.5">
+                  <span className="ct-label">Steps may ask</span>
+                  <div role="group" aria-label="Agent types a step may ask" className="flex flex-wrap gap-1.5">
+                    {agents.map((a) => {
+                      const on = draft.colleagues.canAsk.includes(a.id)
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          className="ct-chip"
+                          aria-pressed={on}
+                          onClick={() =>
+                            editing.setField('colleagues', {
+                              ...draft.colleagues,
+                              canAsk: on ? draft.colleagues.canAsk.filter((x) => x !== a.id) : [...draft.colleagues.canAsk, a.id],
+                            })
+                          }
+                        >
+                          {a.id}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <label className="flex items-center gap-2 text-[13px]">
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      className="ct-input h-9 w-20"
+                      value={draft.colleagues.maxAsks}
+                      onChange={(e) => editing.setField('colleagues', { ...draft.colleagues, maxAsks: Math.min(20, Math.max(1, Number(e.target.value) || 1)) })}
+                    />
+                    asks per step at most
+                  </label>
+                  <span className="text-xs text-ct-text-3">
+                    An agent asks another agent type a question with ask_agent; the answer comes back to it. None pressed: nobody can be asked.
+                  </span>
+                </div>
               </div>
             )}
           </aside>

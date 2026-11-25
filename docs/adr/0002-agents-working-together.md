@@ -73,7 +73,7 @@ like the items of a loop.
 
 1. **Board** (built 2026-11-25): notes table, host↔core request/answer messages, the `sprocket` MCP server with `post_note` and
    `read_notes`, rejection reasons posted, the board in Runs (as a chat) and in Tracket.
-2. **ask_agent**: child jobs, limits, the asks shown under their step.
+2. **ask_agent** (built 2026-11-25): child jobs, limits, the asks shown under their step.
 3. **Concurrent sessions in one run**: already there for For each items; check what a team needs on top (one
    member's ask waiting for you while the others go on, stopping the others when one finishes).
 4. **Team step**: the step kind, `wait_for_reply` and `finish`, stop rules and their gate, file-editing rights.

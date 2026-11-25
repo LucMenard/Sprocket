@@ -659,3 +659,79 @@ fn parallel_branches_start_together_and_the_next_step_waits_for_all() {
     w.end(&starts[4].0, "docs");
     assert_eq!(w.run(&run.id).state, "failed");
 }
+
+// ---- Asking a colleague ----
+
+impl World {
+    /// The colleague answer sent for a request.
+    fn colleague_answer(&self, request: &str) -> Option<(String, bool)> {
+        self.fake.sent.lock().unwrap().iter().find_map(|m| match m {
+            CoreMessage::ColleagueAnswer { request_id, text, error } if request_id == request => Some((text.clone(), *error)),
+            _ => None,
+        })
+    }
+
+    fn ask(&self, request: &str, job: &str, agent: &str, question: &str) {
+        self.host(json!({"type": "colleague.ask", "requestId": request, "jobId": job, "agentType": agent, "question": question}));
+    }
+}
+
+#[test]
+fn an_agent_asks_a_colleague_and_gets_its_answer() {
+    let w = world();
+    let run = w.start();
+    let (plan, prompt) = w.last_start();
+    assert!(prompt.contains("ask_agent, up to 3 times"));
+    let ids: Vec<String> = w.spec_of(&plan).colleagues.iter().map(|c| c.id.clone()).collect();
+    assert_eq!(ids, ["planner", "builder"]);
+
+    w.ask("q1", &plan, "builder", "Which test covers the parser?");
+    let (ask, prompt) = w.last_start();
+    assert_ne!(ask, plan);
+    assert!(prompt.contains("The planner agent, working on the step plan, asks you a question") && prompt.contains("Which test covers the parser?"));
+    assert!(w.spec_of(&ask).colleagues.is_empty(), "no chains: the asked one can't ask");
+
+    // The asked one can't ask in turn
+    w.ask("q2", &ask, "planner", "And you?");
+    assert!(w.colleague_answer("q2").unwrap().1);
+
+    w.end(&ask, "tests/parser.rs");
+    assert_eq!(w.colleague_answer("q1"), Some(("tests/parser.rs".into(), false)));
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "running");
+    let job = view.jobs.iter().find(|j| j.kind == "ask").unwrap();
+    assert_eq!((job.parent_job.as_deref(), job.question.as_deref(), job.state.as_str()), (Some(plan.as_str()), Some("Which test covers the parser?"), "done"));
+    assert_eq!(job.step_id, "plan~builder");
+    let log: Vec<_> = view.jobs.iter().find(|j| j.id == plan).unwrap().log.iter().map(|l| l.what.as_str()).collect();
+    assert_eq!(log, ["job.started", "colleague.asked", "colleague.answered"]);
+    // The run goes on as before: the plan's end opens the gate
+    w.end(&plan, "the plan");
+    assert_eq!(w.run(&run.id).state, "waiting");
+}
+
+#[test]
+fn asks_are_limited_and_only_to_who_the_workflow_allows() {
+    let w = world();
+    w.with("limited", "name: L\ncolleagues: { canAsk: [builder], maxAsks: 1 }\nsteps:\n- id: plan\n  agent: planner\n");
+    w.start_wf("limited");
+    let plan = w.starts()[0].0.clone();
+    w.ask("a1", &plan, "planner", "?");
+    assert!(w.colleague_answer("a1").unwrap().0.contains("You may ask: builder"));
+    w.ask("a2", &plan, "builder", "first");
+    assert!(w.colleague_answer("a2").is_none(), "started, not answered yet");
+    w.ask("a3", &plan, "builder", "second");
+    assert!(w.colleague_answer("a3").unwrap().0.contains("its limit"));
+
+    // The asking job ends: its ask still going is stopped
+    let ask = w.starts()[1].0.clone();
+    w.end(&plan, "done");
+    assert!(w.fake.sent.lock().unwrap().iter().any(|m| matches!(m, CoreMessage::JobStop { job_id } if *job_id == ask)));
+
+    // An agent type that may not ask, or a workflow that lets nobody be asked
+    w.with("shy", "name: S\nagents:\n  loner:\n    model: m\n    ask: never\n    colleagues: false\nsteps:\n- id: solo\n  agent: loner\n");
+    w.start_wf("shy");
+    let solo = w.starts()[2].0.clone();
+    assert!(w.spec_of(&solo).colleagues.is_empty());
+    w.ask("s1", &solo, "loner", "?");
+    assert!(w.colleague_answer("s1").unwrap().0.contains("may not ask"));
+}

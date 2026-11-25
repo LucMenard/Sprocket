@@ -109,6 +109,13 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX notes_by_run ON notes (run_id, id);
     "#,
+    // 6: an agent asking another agent type: a job of its own, under the asking one
+    r#"
+    ALTER TABLE jobs ADD COLUMN parent_job TEXT;
+    ALTER TABLE jobs ADD COLUMN question TEXT;
+    ALTER TABLE jobs ADD COLUMN ask_request TEXT;
+    CREATE INDEX jobs_by_parent ON jobs (parent_job);
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.

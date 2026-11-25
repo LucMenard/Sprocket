@@ -67,7 +67,8 @@ function defaultNode(run: Run) {
   const waiting = run.approvals[0]?.jobId
   const current = run.jobs.filter((j) => !j.superseded)
   const job = current.find((j) => j.id === waiting) ?? current.find((j) => j.state === 'running') ?? current.at(-1)
-  return job?.stepId ?? '$trigger'
+  // A colleague's job shows under the step that asked
+  return job?.stepId.split('~')[0] ?? '$trigger'
 }
 
 function RunList({ runs, selected, onPick, onNew }: { runs: Run[]; selected?: string; onPick: (id: string) => void; onNew: () => void }) {

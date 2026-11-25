@@ -59,6 +59,7 @@ const draftOf = (a: AgentType): AgentDraft => ({
   mcp: [...a.mcp],
   instructions: a.instructions ?? '',
   board: a.board,
+  colleagues: a.colleagues,
 })
 
 /** A shared agent type, editable; Save writes agents/<id>.yaml. */
@@ -144,6 +145,13 @@ export function AgentEditor({ agent, mcpServers, usedBy, onDeleted }: { agent: A
           <span className="flex flex-col gap-0.5">
             <span className="font-medium">Posts to the run's board</span>
             <span className="text-xs text-ct-text-3">It can always read the board, when its workflow has one.</span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input type="checkbox" className="mt-0.5 size-4" checked={draft.colleagues} onChange={(e) => set('colleagues', e.target.checked)} />
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium">Asks colleagues</span>
+            <span className="text-xs text-ct-text-3">It may ask the agent types its workflow allows a question, with ask_agent.</span>
           </span>
         </label>
         <fieldset className="flex flex-col gap-2">

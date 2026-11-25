@@ -34,6 +34,9 @@ pub struct JobView {
     pub superseded: bool,
     /// The JSON output of a step that asked for one; a loop's items
     pub data: Option<Value>,
+    /// For an ask (`kind: ask`): the job that asked, and its question
+    pub parent_job: Option<String>,
+    pub question: Option<String>,
     /// What happened to the job, oldest first: started, tool asks and answers, done or failed
     pub log: Vec<LogLine>,
 }
@@ -142,7 +145,7 @@ fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
 fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
     let mut jobs = conn.prepare(
         "SELECT id, step_id, kind, state, attempt, output, error, cost_usd, started_at, ended_at, sdk_session_id IS NOT NULL,
-         scope, superseded, data FROM jobs WHERE run_id = ?1 ORDER BY rowid",
+         scope, superseded, data, parent_job, question FROM jobs WHERE run_id = ?1 ORDER BY rowid",
     )?;
     run.jobs = jobs
         .query_map([&run.id], |r| {
@@ -161,6 +164,8 @@ fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
                 scope: r.get(11)?,
                 superseded: r.get(12)?,
                 data: r.get::<_, Option<String>>(13)?.and_then(|d| serde_json::from_str(&d).ok()),
+                parent_job: r.get(14)?,
+                question: r.get(15)?,
                 log: Vec::new(),
             })
         })?

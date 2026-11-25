@@ -8,6 +8,7 @@
 //! (or the host crash) without losing track: gates survive, running jobs come back Interrupted.
 
 mod board;
+mod colleagues;
 mod steps;
 mod views;
 #[cfg(test)]
@@ -207,7 +208,7 @@ impl Engine {
             if !steps::is_active(&run.state) && run.state != "interrupted" {
                 return Err(AppError::new("conflict", format!("The run is already {}", run.state)));
             }
-            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action') AND state IN ('running', 'waiting')")?;
+            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask') AND state IN ('running', 'waiting')")?;
             let running: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
             for job_id in running {
                 out.messages.push(CoreMessage::JobStop { job_id });
