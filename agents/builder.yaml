@@ -1,0 +1,10 @@
+description: Implements a plan, runs the tests and opens a draft pull request.
+model: claude-sonnet-5-5
+ask: before-writes
+tools:
+- Read
+- Grep
+- Glob
+- Edit
+- Write
+- Bash

@@ -170,8 +170,13 @@ steps:
     instructions: Implement the plan, run the tests, push a branch and open a draft PR.
 ```
 
-Agent types can be shared between workflows through `agents/*.yaml`. The mockup's Agents screen then edits those
-files.
+Agent types are shared between workflows: each is a file, `agents/<id>.yaml`, and steps name it. A workflow file may
+also define its own under `agents:`, which win for that workflow; the Agents screen moves such ones to the shared files
+("Move to shared"), folding them into a shared one of the same name when they do the same thing.
+
+The Workflows and Agents screens edit these files. A save is checked with the same rules as loading before anything is
+written, and the file is replaced in one step (written beside it, then moved). Saving rewrites the YAML, so comments
+written by hand are lost: the editor owns the files.
 
 ## HTTP API (first slice)
 

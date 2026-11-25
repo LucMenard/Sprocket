@@ -25,12 +25,37 @@ export type AskPolicy = 'never' | 'before-writes' | 'every-action'
 
 export interface AgentType {
   id: string
+  description: string | null
   model: string
   ask: AskPolicy
+  /** Claude Code's tools it may use; all of them when empty */
   tools: string[]
   /** MCP servers it may use; none when empty */
   mcp: string[]
   instructions: string | null
+  /** A shared agent type (agents/<id>.yaml), or one defined in a workflow file */
+  shared: boolean
+}
+
+export interface SharedAgent extends AgentType {
+  file: string
+}
+
+export interface AgentList {
+  agents: SharedAgent[]
+  problems: WorkflowProblem[]
+}
+
+/** What the agent type editor saves */
+export type AgentDraft = Pick<AgentType, 'description' | 'model' | 'ask' | 'tools' | 'mcp' | 'instructions'>
+
+/** What the workflow editor saves; the workflow's own agent types are kept from its file */
+export interface WorkflowDraft {
+  name: string
+  description: string
+  offerInTracket: boolean
+  maxParallelRuns: number
+  steps: WorkflowStep[]
 }
 
 export interface WorkflowStep {
@@ -177,6 +202,14 @@ export const api = {
   activity: (limit = 30) => call<ActivityItem[]>('activity', { limit }),
   mcpServers: () => call<McpServers>('mcp_servers'),
   apiCalls: () => call<ApiCall[]>('api_calls'),
+  agents: () => call<AgentList>('list_agents'),
+  saveWorkflow: (id: string, draft: WorkflowDraft) => call<Workflow>('save_workflow', { id, draft }),
+  createWorkflow: (name: string) => call<Workflow>('create_workflow', { name }),
+  deleteWorkflow: (id: string) => call<void>('delete_workflow', { id }),
+  saveAgent: (id: string, draft: AgentDraft, create: boolean) => call<AgentType>('save_agent', { id, draft, create }),
+  deleteAgent: (id: string) => call<void>('delete_agent', { id }),
+  /** Moves an agent type defined in a workflow file to the shared ones */
+  shareAgent: (workflow: string, id: string) => call<AgentType>('share_agent', { workflow, id }),
   /** A workflow's YAML file, in the default editor */
   openWorkflowFile: (file: string) => call<void>('open_workflow_file', { file }),
 }

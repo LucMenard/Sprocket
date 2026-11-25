@@ -9,7 +9,8 @@ use tauri_plugin_opener::OpenerExt;
 use crate::error::{AppError, Result};
 use crate::engine::{ActivityView, McpServers, RunView, StartRun};
 use crate::host::HostState;
-use crate::{workflow, ApiCall, Ctx};
+use crate::catalog::{self, AgentDraft, Dirs, WorkflowDraft};
+use crate::{agent, workflow, ApiCall, Ctx};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,4 +117,62 @@ pub fn open_workflow_file(app: tauri::AppHandle, ctx: State<'_, Arc<Ctx>>, file:
     app.opener()
         .open_path(file, None::<&str>)
         .map_err(|e| AppError::new("opener", e.to_string()))
+}
+
+fn dirs(ctx: &Ctx) -> Dirs {
+    Dirs::new(&ctx.workflows_dir)
+}
+
+/// The shared agent types, each with the workflows that use it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentListView {
+    agents: Vec<agent::SharedAgent>,
+    problems: Vec<agent::Problem>,
+}
+
+#[tauri::command]
+pub async fn list_agents(ctx: State<'_, Arc<Ctx>>) -> Result<AgentListView> {
+    let list = agent::load_all(&dirs(&ctx).agents)?;
+    Ok(AgentListView { agents: list.agents, problems: list.problems })
+}
+
+#[tauri::command]
+pub async fn save_workflow(ctx: State<'_, Arc<Ctx>>, id: String, draft: WorkflowDraft) -> Result<workflow::Workflow> {
+    catalog::save_workflow(&dirs(&ctx), &id, draft)
+}
+
+#[tauri::command]
+pub async fn create_workflow(ctx: State<'_, Arc<Ctx>>, name: String) -> Result<workflow::Workflow> {
+    catalog::create_workflow(&dirs(&ctx), &name)
+}
+
+/// Its past runs stay (they keep the workflow they ran); one still going must end first.
+#[tauri::command]
+pub async fn delete_workflow(ctx: State<'_, Arc<Ctx>>, id: String) -> Result<()> {
+    let going = ctx
+        .engine
+        .runs(None)?
+        .into_iter()
+        .any(|r| r.workflow_id == id && matches!(r.state.as_str(), "running" | "waiting" | "interrupted"));
+    if going {
+        return Err(AppError::new("conflict", "A run of this workflow is still going: cancel it first"));
+    }
+    catalog::delete_workflow(&dirs(&ctx), &id)
+}
+
+/// `create` makes a new one and refuses to replace an existing one.
+#[tauri::command]
+pub async fn save_agent(ctx: State<'_, Arc<Ctx>>, id: String, draft: AgentDraft, create: bool) -> Result<agent::AgentType> {
+    catalog::save_agent(&dirs(&ctx), &id, draft, create)
+}
+
+#[tauri::command]
+pub async fn delete_agent(ctx: State<'_, Arc<Ctx>>, id: String) -> Result<()> {
+    catalog::delete_agent(&dirs(&ctx), &id)
+}
+
+#[tauri::command]
+pub async fn share_agent(ctx: State<'_, Arc<Ctx>>, workflow: String, id: String) -> Result<agent::AgentType> {
+    catalog::share_agent(&dirs(&ctx), &workflow, &id)
 }

@@ -1,4 +1,6 @@
+mod agent;
 mod api;
+mod catalog;
 mod commands;
 mod db;
 mod engine;
@@ -169,6 +171,13 @@ pub fn run() {
             commands::mcp_servers,
             commands::api_calls,
             commands::open_workflow_file,
+            commands::list_agents,
+            commands::save_workflow,
+            commands::create_workflow,
+            commands::delete_workflow,
+            commands::save_agent,
+            commands::delete_agent,
+            commands::share_agent,
         ])
         .setup(|app| start(app))
         .on_window_event(|window, event| {

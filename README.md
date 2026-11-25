@@ -26,10 +26,13 @@ Windows only for now.
       agent session.
 
     Above them sit Cancel run, Open in Jira and Run again, and a run can be started by hand.
-  - Workflows: the workflow files as a graph, with an inspector for each node. Read-only for now: "Open file" edits
-    the YAML.
-  - Agents: each agent type's model, tools, MCP servers, ask policy and instructions, what it is running now and
-    where it is used. Read-only.
+  - Workflows: an editor. Add agent and approval steps, then set each one in the inspector: its name, agent type,
+    input, instructions, what an approval shows and where a rejection goes. Steps can be moved and deleted, and you
+    can edit the workflow's name, description and run limit. New, Save, Discard and Delete are there too. Save checks
+    the workflow with the same rules as loading, and writes nothing when it fails.
+  - Agents: an editor for the shared agent types: model, tools, MCP servers, when to ask a human, instructions and
+    description. New and Delete are there too; an agent type still used by a workflow can't be deleted. Agent types
+    still defined inside a workflow file are listed apart, with "Move to shared".
   - Integrations: the Tracket connection (address, token, recent calls) and the MCP servers the agents see. Rules,
     status mapping and write-back to Jira are marked as coming later.
 - **Window.** Borderless, with a tray icon. Closing the window keeps runs going in the tray. A second launch brings
@@ -47,8 +50,11 @@ Windows only for now.
   | `POST /v1/runs/{id}/cancel?by=` | Stops the agents and expires the approvals |
   | `POST /v1/jobs/{id}/retry` | A failed or interrupted step again (resumes the session if there is one) |
 
-- **Workflows** are read from `%APPDATA%\com.sprocket.app\workflows\*.yaml`. On first start the folder gets
-  [workflows/fix-a-bug.yaml](workflows/fix-a-bug.yaml).
+- **Workflows** are read from `%APPDATA%\com.sprocket.app\workflows\*.yaml`, and **agent types** from
+  `%APPDATA%\com.sprocket.appgents\*.yaml`. A workflow's steps use the shared agent types. A workflow file may
+  still define its own under `agents:`, and those win for that workflow. On first start the folders get
+  [workflows/fix-a-bug.yaml](workflows/fix-a-bug.yaml) and [agents/](agents). The editors own these files: saving
+  rewrites them, so comments written by hand are not kept.
 - **Agent host** (`agent-host/`, Node + Claude Agent SDK). The app starts it, restarts it with a backoff if it dies,
   and kills it with its agents on quit. It also exits by itself if the app dies.
 - **SQLite** at `%APPDATA%\com.sprocket.app\sprocket.sqlite`: runs, jobs, agent messages, approvals and

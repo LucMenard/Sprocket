@@ -1,0 +1,11 @@
+description: Reads the ticket and the code, and writes a plan. Never edits files.
+model: claude-opus-5-5
+ask: never
+tools:
+- Read
+- Grep
+- Glob
+- WebSearch
+mcp:
+- Atlassian2
+instructions: You plan changes. You never edit files.

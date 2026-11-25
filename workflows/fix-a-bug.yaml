@@ -1,32 +1,16 @@
-# Copied into the app's workflows folder on first start. Edit the copy there.
 name: Fix a bug
 description: Plan the fix, get your approval, implement it and open a draft PR.
 offerInTracket: true
 maxParallelRuns: 2
-
-agents:
-  planner:
-    model: claude-opus-5-5
-    ask: never
-    tools: [Read, Grep, Glob, WebSearch]
-    # MCP servers, by their name in Claude Code (`claude mcp list`). Leave out for none: it also saves
-    # the cost of loading their tools. "before-writes" agents may still read through them freely.
-    mcp: [Atlassian2]
-    instructions: You plan changes. You never edit files.
-  builder:
-    model: claude-sonnet-5-5
-    ask: before-writes
-    tools: [Read, Grep, Glob, Edit, Write, Bash]
-
 steps:
-  - id: plan
-    agent: planner
-    instructions: Read the ticket and the code it concerns, then write a short plan. Do not change any file.
-  - id: approve
-    approval:
-      summary: steps.plan.output
-    onReject: plan
-  - id: build
-    agent: builder
-    input: steps.plan.output
-    instructions: Implement the plan, run the tests, push a branch named after the ticket and open a draft PR.
+- id: plan
+  agent: planner
+  instructions: Read the ticket and the code it concerns, then write a short plan. Do not change any file.
+- id: approve
+  approval:
+    summary: steps.plan.output
+  onReject: plan
+- id: build
+  agent: builder
+  input: steps.plan.output
+  instructions: Implement the plan, run the tests, push a branch named after the ticket and open a draft PR.
