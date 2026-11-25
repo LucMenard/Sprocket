@@ -1,0 +1,45 @@
+/** Activity rows (`run.started`, `tool.asked`…) in words, for the event feed and the job logs. */
+export function describe(what: string, detail: string | null): string {
+  const d = detail ?? ''
+  switch (what) {
+    case 'run.started':
+      return `Run started: ${d}`
+    case 'run.passed':
+      return 'Run passed'
+    case 'run.cancelled':
+      return `Run cancelled by ${d}`
+    case 'run.interrupted':
+      return `Run interrupted: ${d}`
+    case 'job.started':
+      return `Step ${d} started`
+    case 'job.resumed':
+      return `Step ${d} resumed its session`
+    case 'job.retried':
+      return `Step ${d} retried`
+    case 'job.done':
+      return `Step ${d} done`
+    case 'job.failed':
+      return `Step failed: ${d}`
+    case 'job.interrupted':
+      return `Interrupted: ${d}`
+    case 'gate.opened':
+      return `Waiting for approval at ${d}`
+    case 'gate.approved':
+      return `Approved by ${d}`
+    case 'gate.rejected':
+      return `Rejected by ${d}`
+    case 'tool.asked':
+      return `Agent asks to use ${d}`
+    case 'tool.approved':
+      return `Tool allowed by ${d}`
+    case 'tool.rejected':
+      return `Tool denied by ${d}`
+    default:
+      return d ? `${what}: ${d}` : what
+  }
+}
+
+/** Events that need someone's attention are shown in the waiting colour. */
+export function isAttention(what: string) {
+  return what === 'gate.opened' || what === 'tool.asked' || what.endsWith('.failed') || what.endsWith('.interrupted')
+}

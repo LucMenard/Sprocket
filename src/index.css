@@ -1,0 +1,316 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * The palette of the design mockups (canvas "Task & Agent Tracker", page V2): Tracket's own tokens, light and
+ * dark, copied as the mockup defines them (.sp-light / .sp-dark). Screens use the `ct-*` names below, mapped onto
+ * those tokens; the shadcn tokens are mapped onto the same colours.
+ */
+:root {
+    color-scheme: light;
+    --bg: #FFFFFF; --fg: #0A0A0A; --card: #FFFFFF; --muted: #F5F5F5; --mfg: #6B6B6B;
+    --border: #E5E5E5; --border-strong: #D4D4D4; --primary: #171717; --pfg: #FAFAFA;
+    --sel: #2563EB; --on-sel: #FFFFFF; --sel-bg: #F5F5F5; --sel-fg: #0A0A0A; --sel-border: #D4D4D4;
+    --sel-ring: rgba(37, 99, 235, 0.18); --grid: #E5E5E5;
+    --st-act-bg: rgba(59, 130, 246, 0.15); --st-act-fg: #1D4ED8;
+    --st-done-bg: rgba(34, 197, 94, 0.15); --st-done-fg: #15803D;
+    --st-fail-bg: rgba(239, 68, 68, 0.12); --st-fail-fg: #B91C1C; --st-fail-border: rgba(239, 68, 68, 0.4);
+    --lit: #C2410C; --lit-bg: rgba(224, 86, 26, 0.10); --lit-border: rgba(224, 86, 26, 0.45);
+    --loop-bg: rgba(236, 72, 153, 0.10); --loop-fg: #9D174D;
+    --log-fg: #E5E5E5;
+}
+
+.dark {
+    color-scheme: dark;
+    --bg: #191919; --fg: #FAFAFA; --card: #232323; --muted: #2E2E2E; --mfg: #A8A8A8;
+    --border: rgba(255, 255, 255, 0.12); --border-strong: rgba(255, 255, 255, 0.2); --primary: #E5E5E5; --pfg: #171717;
+    --sel: #7DB4FF; --on-sel: #0A0A0A; --sel-bg: #2E2E2E; --sel-fg: #FAFAFA; --sel-border: rgba(255, 255, 255, 0.22);
+    --sel-ring: rgba(125, 180, 255, 0.22); --grid: rgba(255, 255, 255, 0.10);
+    --st-act-bg: rgba(59, 130, 246, 0.15); --st-act-fg: #93C5FD;
+    --st-done-bg: rgba(34, 197, 94, 0.15); --st-done-fg: #86EFAC;
+    --st-fail-bg: rgba(239, 68, 68, 0.15); --st-fail-fg: #FCA5A5; --st-fail-border: rgba(239, 68, 68, 0.45);
+    --lit: #FFB27A; --lit-bg: rgba(255, 90, 31, 0.12); --lit-border: rgba(255, 178, 122, 0.45);
+    --loop-bg: rgba(236, 72, 153, 0.14); --loop-fg: #F9A8D4;
+}
+
+/* The names the screens use, on the mockup's tokens (same in both themes) */
+:root, .dark {
+    --ct-page: var(--bg);
+    --ct-surface: var(--card);
+    --ct-subtle: var(--muted);
+    --ct-border: var(--border);
+    --ct-border-soft: var(--muted);
+    --ct-control: var(--border-strong);
+    --ct-text: var(--fg);
+    --ct-text-2: var(--mfg);
+    --ct-text-3: var(--mfg);
+    --ct-faint: #9CA3AF;
+    --ct-accent: var(--sel);
+    --ct-accent-soft: var(--sel-bg);
+    --ct-accent-ring: var(--sel-border);
+    --ct-accent-text: var(--sel-fg);
+    --ct-focus: var(--sel-ring);
+    --ct-canvas: var(--muted);
+    --ct-canvas-dot: var(--grid);
+    --ct-edge: var(--border-strong);
+
+    --ct-done: #1F7A3F;
+    --ct-running: var(--sel);
+    --ct-waiting: #C2410C;
+    --ct-failed: #B91C1C;
+    --ct-idle: #9CA3AF;
+    --ct-connected: #16A34A;
+
+    --ct-pill-run-bg: var(--st-act-bg); --ct-pill-run: var(--st-act-fg);
+    --ct-pill-wait-bg: var(--lit-bg); --ct-pill-wait: var(--lit);
+    --ct-pill-pass-bg: var(--st-done-bg); --ct-pill-pass: var(--st-done-fg);
+    --ct-pill-fail-bg: var(--st-fail-bg); --ct-pill-fail: var(--st-fail-fg);
+    --ct-pill-none-bg: var(--muted); --ct-pill-none: var(--mfg);
+
+    --ct-kind-trigger-bg: var(--lit-bg); --ct-kind-trigger: var(--lit);
+    --ct-kind-agent-bg: var(--st-act-bg); --ct-kind-agent: var(--st-act-fg);
+    --ct-kind-approval-bg: #FEF3C7; --ct-kind-approval: #92400E;
+    --ct-kind-end-bg: var(--muted); --ct-kind-end: var(--mfg);
+
+    --ct-wait-card-bg: var(--lit-bg); --ct-wait-card-border: var(--lit-border);
+    --ct-approve: #1F7A3F;
+    --ct-danger-border: var(--st-fail-border); --ct-danger: var(--st-fail-fg);
+
+    --ct-log-bg: #0B0B0C; --ct-log: var(--log-fg, #E5E5E5); --ct-log-time: #9CA3AF;
+    --ct-log-ok: #86EFAC; --ct-log-err: #FCA5A5; --ct-log-wait: #FDBA74; --ct-log-run: #93C5FD;
+
+    --ct-shadow: 0 1px 3px rgba(17, 24, 39, 0.06);
+    --radius: 0.5rem;
+}
+
+/* shadcn's tokens: --card, --muted, --border and --primary are already the mockup's; these fill in the rest */
+:root, .dark {
+    --background: var(--bg);
+    --foreground: var(--fg);
+    --card-foreground: var(--fg);
+    --popover: var(--card);
+    --popover-foreground: var(--fg);
+    --primary-foreground: var(--pfg);
+    --secondary: var(--sel-bg);
+    --secondary-foreground: var(--sel-fg);
+    --muted-foreground: var(--mfg);
+    --accent: var(--muted);
+    --accent-foreground: var(--fg);
+    --destructive: var(--st-fail-fg);
+    --input: var(--border-strong);
+    --ring: var(--sel);
+}
+
+@theme inline {
+    --font-sans: 'Geist Variable', system-ui, sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.25);
+
+    --color-ct-page: var(--ct-page);
+    --color-ct-surface: var(--ct-surface);
+    --color-ct-subtle: var(--ct-subtle);
+    --color-ct-border: var(--ct-border);
+    --color-ct-border-soft: var(--ct-border-soft);
+    --color-ct-control: var(--ct-control);
+    --color-ct-text: var(--ct-text);
+    --color-ct-text-2: var(--ct-text-2);
+    --color-ct-text-3: var(--ct-text-3);
+    --color-ct-faint: var(--ct-faint);
+    --color-ct-accent: var(--ct-accent);
+    --color-ct-accent-soft: var(--ct-accent-soft);
+    --color-ct-accent-ring: var(--ct-accent-ring);
+    --color-ct-accent-text: var(--ct-accent-text);
+    --color-ct-done: var(--ct-done);
+    --color-ct-waiting: var(--ct-waiting);
+    --color-ct-failed: var(--ct-failed);
+    --color-ct-idle: var(--ct-idle);
+    --color-ct-connected: var(--ct-connected);
+    /* Kept for the components that colour by state */
+    --color-state-running: var(--ct-accent);
+    --color-state-waiting: var(--ct-waiting);
+    --color-state-done: var(--ct-done);
+    --color-state-failed: var(--ct-failed);
+    --color-state-idle: var(--ct-idle);
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+    html {
+        @apply font-sans;
+        font-size: 14px;
+    }
+    body {
+        background: var(--ct-page);
+        color: var(--ct-text);
+    }
+    button:not(:disabled),
+    [role='button']:not([aria-disabled='true']),
+    [role='tab'],
+    summary,
+    select,
+    label[for] {
+        cursor: pointer;
+    }
+    button:disabled {
+        cursor: not-allowed;
+    }
+}
+
+@layer components {
+    /* A white card with a thin border, the mockup's main block */
+    .ct-card {
+        background: var(--ct-surface);
+        border: 1px solid var(--ct-border);
+        border-radius: 10px;
+    }
+    /* The small uppercase heading over lists and panes */
+    .ct-eyebrow {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ct-text-3);
+    }
+    .ct-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ct-text-2);
+    }
+    .ct-mono {
+        font-family: var(--font-mono);
+    }
+
+    .ct-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 38px;
+        padding: 0 14px;
+        border-radius: 8px;
+        border: 1px solid var(--ct-control);
+        background: var(--ct-surface);
+        color: var(--ct-text);
+        font-weight: 500;
+        white-space: nowrap;
+    }
+    .ct-btn:hover:not(:disabled) { background: var(--ct-subtle); }
+    .ct-btn:disabled { opacity: 0.55; }
+    .ct-btn-sm { height: 34px; padding: 0 12px; }
+    .ct-btn-primary { border: 0; background: var(--primary); color: var(--pfg); font-weight: 600; }
+    .ct-btn-primary:hover:not(:disabled) { background: var(--primary); opacity: 0.9; }
+    .ct-btn-approve { border: 0; background: var(--ct-approve); color: #FFFFFF; font-weight: 600; }
+    .ct-btn-approve:hover:not(:disabled) { background: var(--ct-approve); filter: brightness(1.08); }
+    .ct-btn-danger { border-color: var(--ct-danger-border); color: var(--ct-danger); }
+    .ct-btn-ghost { border-color: transparent; background: transparent; }
+
+    .ct-input {
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid var(--ct-control);
+        border-radius: 8px;
+        background: var(--ct-surface);
+        color: var(--ct-text);
+        width: 100%;
+    }
+    .ct-input:focus { outline: 2px solid var(--ct-focus); border-color: var(--ct-accent); }
+    .ct-input[readonly] { background: var(--ct-subtle); }
+
+    .ct-pill {
+        display: inline-flex;
+        align-items: center;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 12px;
+        white-space: nowrap;
+    }
+    .ct-pill-run { background: var(--ct-pill-run-bg); color: var(--ct-pill-run); }
+    .ct-pill-wait { background: var(--ct-pill-wait-bg); color: var(--ct-pill-wait); }
+    .ct-pill-pass { background: var(--ct-pill-pass-bg); color: var(--ct-pill-pass); }
+    .ct-pill-fail { background: var(--ct-pill-fail-bg); color: var(--ct-pill-fail); }
+    .ct-pill-none { background: var(--ct-pill-none-bg); color: var(--ct-pill-none); }
+
+    /* A row in a list (runs, agent types…): accent background when it is the one shown */
+    .ct-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        text-align: left;
+        color: var(--ct-text);
+    }
+    .ct-row:hover { background: var(--ct-subtle); }
+    .ct-row[aria-current='true'], .ct-row[aria-current='page'] {
+        background: var(--ct-accent-soft);
+        color: var(--ct-accent-text);
+        box-shadow: inset 0 0 0 1px var(--ct-accent-ring);
+    }
+
+    /* Filter chips, round */
+    .ct-chip {
+        min-height: 32px;
+        padding: 0 12px;
+        border-radius: 16px;
+        font-size: 12px;
+        font-weight: 600;
+        background: var(--card);
+        color: var(--mfg);
+        border: 1px solid var(--border-strong);
+    }
+    .ct-chip[aria-pressed='true'] {
+        background: var(--ct-accent-soft);
+        color: var(--ct-accent-text);
+        border-color: var(--ct-accent-ring);
+    }
+
+    /* The dotted canvas graphs are drawn on */
+    .ct-canvas {
+        background-color: var(--ct-canvas);
+        background-image: radial-gradient(var(--ct-canvas-dot) 1px, transparent 1px);
+        background-size: 18px 18px;
+    }
+
+    /* The dark log panel */
+    .ct-log {
+        list-style: none;
+        margin: 0;
+        padding: 12px;
+        background: var(--ct-log-bg);
+        color: var(--ct-log);
+        border-radius: 8px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.7;
+        overflow-x: auto;
+    }
+}
