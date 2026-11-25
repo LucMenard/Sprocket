@@ -12,7 +12,7 @@ export default defineConfig({
   // Tauri expects a fixed port and must not clear the Rust output
   clearScreen: false,
   server: {
-    port: 1420,
+    port: 1430, // not 1420: Tracket's dev server uses it, and both run side by side
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
   },
