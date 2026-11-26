@@ -45,6 +45,8 @@ fn world() -> World {
     let fake = Arc::new(Fake::default());
     let db = Db::open(&dir.path().join("sprocket.sqlite")).unwrap();
     let engine = Engine::new(db, Box::new(FakeSink(fake.clone())), workflows);
+    // Agents only work in a git working tree
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
     World { engine, fake, folder: dir.path().display().to_string(), _dir: dir }
 }
 
@@ -212,10 +214,33 @@ fn starting_checks_the_ticket_the_folder_and_the_limit() {
     };
     assert_eq!(bad("not a key", &w.folder), "invalid");
     assert_eq!(bad("SIS-1", "C:/no/such/folder"), "invalid");
+    // Relative, not a git working tree, or out of one with `..`: refused
+    assert_eq!(bad("SIS-1", "workflows"), "invalid");
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(bad("SIS-1", &plain.path().display().to_string()), "invalid");
+    assert_eq!(bad("SIS-1", &format!("{}/..", w.folder)), "invalid");
+    assert_eq!(bad("SIS-1", r"\\server\share\repo"), "invalid");
     w.start();
     w.start();
     // fix-a-bug allows two runs at once
     assert_eq!(bad("SIS-1", &w.folder), "busy");
+}
+
+#[test]
+fn the_worktree_folder_is_kept_resolved() {
+    let w = world();
+    let run = w
+        .engine
+        .start_run(StartRun {
+            workflow: "fix-a-bug".into(),
+            ticket: TicketRef { key: "SIS-9".into(), title: "t".into(), url: "u".into() },
+            folder: format!("{}/workflows/..", w.folder),
+            started_by: "Luc".into(),
+            request: None,
+        })
+        .unwrap();
+    assert!(!run.folder.contains("..") && !run.folder.starts_with(r"\\"), "{}", run.folder);
+    assert!(std::path::Path::new(&run.folder).join(".git").exists());
 }
 
 #[test]
@@ -1006,6 +1031,7 @@ fn live_team() {
         panic!("timed out waiting for {what}");
     };
     wait("the agent host", &|| host.is_ready(), 60);
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
 
     let run = engine
         .start_run(StartRun {

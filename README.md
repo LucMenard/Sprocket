@@ -79,7 +79,7 @@ Windows only for now.
   | `GET /v1/tickets` | Each ticket's latest run in a few words: state, the oldest pending approval (id, kind, summary), the failed step, how many jobs work |
   | `GET /v1/runs?ticket=SIS-244` | Runs (of a ticket), newest first, with jobs, pending approvals and the board's notes |
   | `POST /v1/runs/{id}/notes` | `{body, to?, by}`: a person's note on the run's board; 201 with the note |
-  | `POST /v1/runs` | `{workflow, ticket: {key, title, url}, folder, startedBy, request?}`; 201 with the run, 409 at the workflow's limit. A workflow with `forRequests` needs `request`, which its steps read as `{{ request }}` |
+  | `POST /v1/runs` | `{workflow, ticket: {key, title, url}, folder, startedBy, request?}`; 201 with the run, 409 at the workflow's limit. A workflow with `forRequests` needs `request`, which its steps read as `{{ request }}`. `folder` must be the top of a git working tree on this computer (it is resolved, and kept resolved) |
   | `POST /v1/runs/{id}/show` | Brings Sprocket's window up on the run |
   | `POST /v1/approvals/{id}` | `{decision: "approve" or "reject", reason?, by?}`; 409 if already decided |
   | `POST /v1/runs/{id}/cancel?by=` | Stops the agents and expires the approvals; closes a failed run |

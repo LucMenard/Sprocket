@@ -99,13 +99,13 @@ impl Engine {
         Ok(value)
     }
 
+    /// Starts a workflow on a ticket. `req.folder` comes from the local API and becomes the agents' working
+    /// directory: only a git working tree on this computer is accepted, as resolved by `worktree_folder`.
     pub fn start_run(&self, req: StartRun) -> Result<RunView> {
         if !valid_issue_key(&req.ticket.key) {
             return Err(AppError::new("invalid", "The ticket key must look like ABC-123"));
         }
-        if !std::path::Path::new(&req.folder).is_dir() {
-            return Err(AppError::new("invalid", format!("The folder {} doesn't exist", req.folder)));
-        }
+        let folder = worktree_folder(&req.folder)?;
         let wf = workflow::load_all(&self.workflows_dir)?
             .workflows
             .into_iter()
@@ -142,7 +142,7 @@ impl Engine {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11)"
                 ),
                 params![id, wf.id, wf.name, snapshot, number, req.ticket.key, req.ticket.title, req.ticket.url,
-                    req.folder, req.started_by, request],
+                    folder, req.started_by, request],
             )?;
             steps::activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, req.started_by))?;
             steps::drive(conn, &id, out)?;
@@ -298,4 +298,33 @@ impl Engine {
         let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
         views::job_messages(&conn, job_id)
     }
+}
+
+/// The folder agents may work in, as `start_run` gets it from the local API: an absolute path on this computer
+/// to the top of a git working tree (Tracket's ticket worktrees are). It is resolved first, so `..` and links
+/// can't lead out of it, and the resolved path is what is kept. A relative path, a network share, or any other
+/// folder (the home folder, `C:\Windows`…) is refused.
+pub fn worktree_folder(input: &str) -> Result<String> {
+    let invalid = |why: &str| AppError::new("invalid", format!("The worktree folder {why}"));
+    let given = std::path::Path::new(input.trim());
+    if !given.is_absolute() {
+        return Err(invalid("must be a full path"));
+    }
+    let resolved = std::fs::canonicalize(given).map_err(|_| invalid("doesn't exist"))?;
+    if !resolved.is_dir() {
+        return Err(invalid("isn't a folder"));
+    }
+    // Windows resolves a local drive to `\\?\C:\…` and a share to `\\?\UNC\…`
+    let text = resolved.to_string_lossy().to_string();
+    let local = match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        Some(_) => return Err(invalid("must be on this computer")),
+        None if text.starts_with(r"\\") => return Err(invalid("must be on this computer")),
+        None => text,
+    };
+    // A repository has a `.git` folder, a linked worktree a `.git` file
+    if !resolved.join(".git").exists() {
+        return Err(invalid("must be the top of a git working tree"));
+    }
+    Ok(local)
 }
