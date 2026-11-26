@@ -76,7 +76,7 @@ const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', act
 
 /** `steps.old.` → `steps.new.` in a text */
 const renameIn = (text: string | null | undefined, from: string, to: string) =>
-  text?.replace(new RegExp(`\\bsteps\\.${from.replace(/[-]/g, '\\-')}\\.`, 'g'), `steps.${to}.`) ?? null
+  text?.replace(new RegExp(`\\bsteps\\.${from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`, 'g'), `steps.${to}.`) ?? null
 
 /** Where a new node goes: in a block (the workflow's, a branch, a loop, a parallel branch), at a place. */
 export interface Slot {
