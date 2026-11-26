@@ -102,6 +102,8 @@ pub struct RunView {
     pub ticket: TicketRef,
     pub folder: String,
     pub started_by: String,
+    /// What someone asked for, on a run started from a request
+    pub request: Option<String>,
     pub state: String,
     pub started_at: String,
     pub ended_at: Option<String>,
@@ -118,7 +120,7 @@ pub struct RunView {
 }
 
 const RUN_COLUMNS: &str = "id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title, ticket_url,
-    folder, started_by, state, started_at, ended_at";
+    folder, started_by, state, started_at, ended_at, request";
 
 fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
     let wf: Option<Workflow> = serde_json::from_str(&r.get::<_, String>(3)?).ok();
@@ -130,6 +132,7 @@ fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
         ticket: TicketRef { key: r.get(5)?, title: r.get(6)?, url: r.get(7)? },
         folder: r.get(8)?,
         started_by: r.get(9)?,
+        request: r.get(13)?,
         state: r.get(10)?,
         started_at: r.get(11)?,
         ended_at: r.get(12)?,
@@ -198,6 +201,61 @@ fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(())
+}
+
+/// A ticket's latest run, in a few words: what Tracket shows on the ticket's row.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketSummary {
+    pub ticket_key: String,
+    pub run_id: String,
+    pub number: i64,
+    pub workflow_name: String,
+    pub state: String,
+    pub started_at: String,
+    /// The oldest decision waiting, if any: approving it is what moves the run on
+    pub approval_id: Option<String>,
+    /// `gate` (a step's approval) or `tool` (an agent asking to use a tool)
+    pub approval_kind: Option<String>,
+    pub approval_summary: Option<String>,
+    /// The step that failed or was interrupted, to retry it
+    pub failed_job_id: Option<String>,
+    /// How many of its jobs are working now
+    pub working: u32,
+}
+
+/// The latest run of each ticket that has one, newest first.
+pub fn tickets(conn: &Connection) -> Result<Vec<TicketSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.ticket_key, r.id, r.number, r.workflow_name, r.state, r.started_at,
+           (SELECT a.id FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT a.summary FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT j.id FROM jobs j WHERE j.run_id = r.id AND j.superseded = 0 AND j.state IN ('failed', 'interrupted', 'rejected')
+              ORDER BY j.rowid DESC LIMIT 1),
+           (SELECT a.kind FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT COUNT(*) FROM jobs j WHERE j.run_id = r.id AND j.state = 'running')
+         FROM runs r
+         WHERE r.started_at = (SELECT MAX(o.started_at) FROM runs o WHERE o.ticket_key = r.ticket_key)
+         ORDER BY r.started_at DESC LIMIT 500",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TicketSummary {
+                ticket_key: r.get(0)?,
+                run_id: r.get(1)?,
+                number: r.get(2)?,
+                workflow_name: r.get(3)?,
+                state: r.get(4)?,
+                started_at: r.get(5)?,
+                approval_id: r.get(6)?,
+                approval_kind: r.get(9)?,
+                approval_summary: r.get(7)?,
+                failed_job_id: r.get(8)?,
+                working: r.get(10)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 /// The latest 100 runs, or a ticket's runs, newest first.

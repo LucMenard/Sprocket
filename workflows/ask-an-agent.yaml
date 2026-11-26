@@ -1,0 +1,15 @@
+name: Ask an agent
+description: Do what you ask on the ticket. The planner turns your request into steps, you approve them, the builder does them.
+forRequests: true
+steps:
+- id: plan
+  agent: planner
+  instructions: Read the ticket and the code it concerns, then turn the request into a short plan of steps. Do not change any file.
+- id: approve
+  approval:
+    summary: steps.plan.output
+  onReject: plan
+- id: do
+  agent: builder
+  input: steps.plan.output
+  instructions: Carry out the plan, run the tests if there are any, and say what you did.

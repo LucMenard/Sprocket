@@ -75,18 +75,21 @@ Windows only for now.
   | Method and path | What it does |
   | --- | --- |
   | `GET /v1/health` | Version and the agent host's state |
-  | `GET /v1/workflows?offered=true` | Workflows offered in Tracket |
+  | `GET /v1/workflows?offered=true` | Workflows offered in Tracket (and those that run requests), with `forRequests` |
+  | `GET /v1/tickets` | Each ticket's latest run in a few words: state, the oldest pending approval (id, kind, summary), the failed step, how many jobs work |
   | `GET /v1/runs?ticket=SIS-244` | Runs (of a ticket), newest first, with jobs, pending approvals and the board's notes |
   | `POST /v1/runs/{id}/notes` | `{body, to?, by}`: a person's note on the run's board; 201 with the note |
-  | `POST /v1/runs` | `{workflow, ticket: {key, title, url}, folder, startedBy}`; 201 with the run, 409 at the workflow's limit |
+  | `POST /v1/runs` | `{workflow, ticket: {key, title, url}, folder, startedBy, request?}`; 201 with the run, 409 at the workflow's limit. A workflow with `forRequests` needs `request`, which its steps read as `{{ request }}` |
+  | `POST /v1/runs/{id}/show` | Brings Sprocket's window up on the run |
   | `POST /v1/approvals/{id}` | `{decision: "approve" or "reject", reason?, by?}`; 409 if already decided |
-  | `POST /v1/runs/{id}/cancel?by=` | Stops the agents and expires the approvals |
+  | `POST /v1/runs/{id}/cancel?by=` | Stops the agents and expires the approvals; closes a failed run |
   | `POST /v1/jobs/{id}/retry` | A failed or interrupted step again (resumes the session if there is one) |
 
 - **Workflows** are read from `%APPDATA%\com.sprocket.app\workflows\*.yaml`, and **agent types** from
   `%APPDATA%\com.sprocket.appgents\*.yaml`. A workflow's steps use the shared agent types. A workflow file may
   still define its own under `agents:`, and those win for that workflow. On first start the folders get
-  [workflows/fix-a-bug.yaml](workflows/fix-a-bug.yaml) and [agents/](agents). The editors own these files: saving
+  [workflows/fix-a-bug.yaml](workflows/fix-a-bug.yaml), [workflows/ask-an-agent.yaml](workflows/ask-an-agent.yaml)
+  (what Tracket's "Ask an agent" starts: copy it into an existing folder to get it) and [agents/](agents). The editors own these files: saving
   rewrites them, so comments written by hand are not kept.
 - **Agent host** (`agent-host/`, Node + Claude Agent SDK). The app starts it, restarts it with a backoff if it dies,
   and kills it with its agents on quit. It also exits by itself if the app dies.

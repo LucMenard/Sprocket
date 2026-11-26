@@ -25,6 +25,8 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
   const [title, setTitle] = useState('')
   const [url, setUrl] = useState('')
   const [folder, setFolder] = useState('')
+  const [request, setRequest] = useState('')
+  const picked = workflows.find((w) => w.id === (workflow || workflows[0]?.id))
 
   const start = useMutation({
     mutationFn: () =>
@@ -33,6 +35,7 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
         ticket: { key: key.trim().toUpperCase(), title: title.trim(), url: url.trim() },
         folder: folder.trim(),
         startedBy: 'Sprocket',
+        request: picked?.forRequests ? request.trim() : undefined,
       }),
     onSuccess: (run) => {
       void queryClient.invalidateQueries({ queryKey: ['runs'] })
@@ -60,6 +63,11 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
           ))}
         </select>
       </Field>
+      {picked?.forRequests && (
+        <Field id="sr-request" label="What should it do?">
+          <textarea id="sr-request" className="ct-input min-h-20" required value={request} onChange={(e) => setRequest(e.target.value)} />
+        </Field>
+      )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-[10rem_1fr]">
         <Field id="sr-key" label="Ticket">
           <input id="sr-key" className="ct-input ct-mono" required placeholder="SIS-244" value={key} onChange={(e) => setKey(e.target.value)} />

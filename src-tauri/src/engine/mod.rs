@@ -51,6 +51,9 @@ pub struct StartRun {
     /// The ticket's worktree, made by Tracket
     pub folder: String,
     pub started_by: String,
+    /// What someone asked for in words (Tracket's "Ask an agent"); its steps read it as `{{ request }}`
+    #[serde(default)]
+    pub request: Option<String>,
 }
 
 pub struct Engine {
@@ -109,6 +112,10 @@ impl Engine {
             .find(|w| w.id == req.workflow)
             .ok_or_else(|| AppError::new("notFound", format!("No workflow `{}`", req.workflow)))?;
 
+        let request = req.request.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+        if wf.for_requests && request.is_none() {
+            return Err(AppError::new("invalid", format!("{} runs what you ask: say what you want done", wf.name)));
+        }
         let run_id = self.change(|conn, out| {
             let active: u32 = conn.query_row(
                 "SELECT count(*) FROM runs WHERE workflow_id = ?1 AND state IN ('running', 'waiting')",
@@ -131,11 +138,11 @@ impl Engine {
             conn.execute(
                 &format!(
                     "INSERT INTO runs (id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title,
-                     ticket_url, folder, started_by, state, started_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW})"
+                     ticket_url, folder, started_by, state, started_at, request)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11)"
                 ),
                 params![id, wf.id, wf.name, snapshot, number, req.ticket.key, req.ticket.title, req.ticket.url,
-                    req.folder, req.started_by],
+                    req.folder, req.started_by, request],
             )?;
             steps::activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, req.started_by))?;
             steps::drive(conn, &id, out)?;
@@ -211,7 +218,8 @@ impl Engine {
     pub fn cancel_run(&self, run_id: &str, by: &str) -> Result<()> {
         self.change(|conn, out| {
             let run = load_run(conn, run_id)?;
-            if !steps::is_active(&run.state) && run.state != "interrupted" {
+            // A failed run can be closed too, so it no longer shows as failed in Tracket
+            if !steps::is_active(&run.state) && !matches!(run.state.as_str(), "interrupted" | "failed") {
                 return Err(AppError::new("conflict", format!("The run is already {}", run.state)));
             }
             let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask', 'member') AND state IN ('running', 'waiting')")?;
@@ -262,6 +270,12 @@ impl Engine {
     pub fn runs(&self, ticket: Option<&str>) -> Result<Vec<RunView>> {
         let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
         views::runs(&conn, ticket)
+    }
+
+    /// The latest run of each ticket, in a few words.
+    pub fn tickets(&self) -> Result<Vec<views::TicketSummary>> {
+        let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
+        views::tickets(&conn)
     }
 
     pub fn run(&self, run_id: &str) -> Result<RunView> {

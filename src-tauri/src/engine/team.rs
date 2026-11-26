@@ -35,6 +35,9 @@ fn member_prompt(conn: &Connection, run: &RunRow, step: &Step, team: &Team, scop
         run.wf.name,
     );
     p.push_str(&format!("\n## The team's goal\n\n{}\n", steps::render(conn, run, scope, &team.goal)));
+    if let Some(request) = &run.request {
+        p.push_str(&format!("\n## What was asked\n\n{request}\n"));
+    }
     p.push_str(&format!(
         "\n## Working together\n\nTalk with the team on the run's board: read_notes to catch up, post_note to say something to \
          everyone or to one of {} (`to`), and wait_for_note to wait until someone else posts. Start by reading the board.\n",

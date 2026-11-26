@@ -125,6 +125,10 @@ const MIGRATIONS: &[&str] = &[
         run_id     TEXT NOT NULL
     );
     "#,
+    // 8: what someone asked for, on a run started from a request
+    r#"
+    ALTER TABLE runs ADD COLUMN request TEXT;
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.

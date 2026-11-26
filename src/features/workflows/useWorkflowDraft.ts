@@ -8,6 +8,7 @@ export function draftOf(w: Workflow): WorkflowDraft {
     name: w.name,
     description: w.description,
     offerInTracket: w.offerInTracket,
+    forRequests: w.forRequests,
     maxParallelRuns: w.maxParallelRuns,
     board: w.board,
     steps: structuredClone(w.steps),

@@ -75,6 +75,8 @@ pub struct WorkflowDraft {
     pub name: String,
     pub description: String,
     pub offer_in_tracket: bool,
+    #[serde(default)]
+    pub for_requests: bool,
     pub max_parallel_runs: u32,
     #[serde(default = "yes")]
     pub board: bool,
@@ -139,6 +141,7 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
         name: draft.name.trim().to_string(),
         description: draft.description.trim().to_string(),
         offer_in_tracket: draft.offer_in_tracket,
+        for_requests: draft.for_requests,
         max_parallel_runs: draft.max_parallel_runs.max(1),
         board: draft.board,
         agents,
@@ -179,6 +182,7 @@ pub fn create_workflow(dirs: &Dirs, name: &str) -> Result<Workflow> {
         name: name.trim().to_string(),
         description: String::new(),
         offer_in_tracket: false,
+        for_requests: false,
         max_parallel_runs: 1,
         board: true,
         layout: Default::default(),
@@ -329,6 +333,7 @@ mod tests {
             name: "Fix a bug".into(),
             description: "Shorter".into(),
             offer_in_tracket: false,
+            for_requests: false,
             max_parallel_runs: 3,
             board: true,
             layout: Default::default(),
@@ -348,6 +353,7 @@ mod tests {
             name: "Fix a bug".into(),
             description: String::new(),
             offer_in_tracket: false,
+            for_requests: false,
             max_parallel_runs: 1,
             board: true,
             layout: Default::default(),
@@ -358,7 +364,8 @@ mod tests {
         assert!(save_workflow(&dirs, "fix-a-bug", broken).unwrap_err().message.contains("doesn't exist"));
         // Nothing was written: the file is still the saved one
         let again = workflow::load_all(&dirs.workflows).unwrap();
-        assert_eq!(again.workflows[0].steps.len(), 2);
+        let saved = again.workflows.iter().find(|w| w.id == "fix-a-bug").unwrap();
+        assert_eq!(saved.steps.len(), 2);
     }
 
     #[test]
@@ -411,6 +418,7 @@ mod tests {
             name: wf.name.clone(),
             description: String::new(),
             offer_in_tracket: true,
+            for_requests: false,
             max_parallel_runs: 1,
             board: true,
             steps: wf.steps.clone(),

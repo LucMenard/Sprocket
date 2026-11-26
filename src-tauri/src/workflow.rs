@@ -13,6 +13,8 @@ use crate::expr;
 
 /// The example copied into an empty workflows folder.
 pub const EXAMPLE: (&str, &str) = ("fix-a-bug.yaml", include_str!("../../workflows/fix-a-bug.yaml"));
+/// The workflow Tracket's "Ask an agent" uses, also written into an empty folder.
+pub const ASK_EXAMPLE: (&str, &str) = ("ask-an-agent.yaml", include_str!("../../workflows/ask-an-agent.yaml"));
 
 // ---- The file as written ----
 
@@ -24,6 +26,9 @@ pub struct FileWorkflow {
     pub description: String,
     #[serde(default)]
     pub offer_in_tracket: bool,
+    /// Runs what someone asks in words (Tracket's "Ask an agent"): its steps read it as `{{ request }}`
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub for_requests: bool,
     #[serde(default = "one")]
     pub max_parallel_runs: u32,
     /// A board the run's agents and people share; on when left out
@@ -143,6 +148,10 @@ fn yes() -> bool {
 
 fn is_yes(b: &bool) -> bool {
     *b
+}
+
+fn is_no(b: &bool) -> bool {
+    !*b
 }
 
 /// A step as written. Which fields it has says what it is:
@@ -423,6 +432,9 @@ pub struct Workflow {
     pub name: String,
     pub description: String,
     pub offer_in_tracket: bool,
+    /// Runs what someone asks in words
+    #[serde(default)]
+    pub for_requests: bool,
     pub max_parallel_runs: u32,
     /// Runs have a board (older runs' snapshots: yes)
     #[serde(default = "yes")]
@@ -526,6 +538,10 @@ impl Visible {
     fn paths(&self, e: &expr::Expr, what: &str) -> Result<(), String> {
         for path in e.paths() {
             let name = &path[0];
+            // What someone asked for, on a run started from a request (null otherwise)
+            if name == "request" {
+                continue;
+            }
             if name != "steps" {
                 if !self.items.contains(name) {
                     return Err(format!(
@@ -781,7 +797,7 @@ impl Checker<'_> {
             StepKind::ForEach => {
                 vis.check(s.for_each.as_deref().unwrap_or_default(), &at("forEach"))?;
                 let item = s.item.unwrap_or_else(|| "item".into());
-                let reserved = ["steps", "and", "or", "not", "contains", "true", "false", "null"];
+                let reserved = ["steps", "request", "and", "or", "not", "contains", "true", "false", "null"];
                 if !agent::valid_id(&item) || reserved.contains(&item.as_str()) {
                     return Err(format!("Step `{id}`: `as` is a name of lowercase letters, digits, - or _"));
                 }
@@ -850,6 +866,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         name: w.name,
         description: w.description,
         offer_in_tracket: w.offer_in_tracket,
+        for_requests: w.for_requests,
         max_parallel_runs: w.max_parallel_runs.max(1),
         board: w.board,
         file: file.to_string(),
@@ -884,6 +901,7 @@ pub fn load_all(dir: &Path) -> std::io::Result<WorkflowList> {
     if !dir.exists() {
         std::fs::create_dir_all(dir)?;
         std::fs::write(dir.join(EXAMPLE.0), EXAMPLE.1)?;
+        std::fs::write(dir.join(ASK_EXAMPLE.0), ASK_EXAMPLE.1)?;
     }
     let mut list = WorkflowList::default();
     for path in files(dir)? {
@@ -1005,6 +1023,7 @@ steps:
             name: w.name.clone(),
             description: String::new(),
             offer_in_tracket: false,
+            for_requests: false,
             max_parallel_runs: 1,
             board: true,
             agents: BTreeMap::new(),
@@ -1105,12 +1124,14 @@ board: false").contains("board"));
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("workflows");
         let first = load_all(&folder).unwrap();
-        assert_eq!(first.workflows.len(), 1);
+        let ids: Vec<_> = first.workflows.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["ask-an-agent", "fix-a-bug"]);
+        assert!(first.workflows[0].for_requests);
         assert!(dir.path().join("agents").join("planner.yaml").exists());
 
         std::fs::write(folder.join("broken.yaml"), "name: [").unwrap();
         let second = load_all(&folder).unwrap();
-        assert_eq!((second.workflows.len(), second.problems.len()), (1, 1));
+        assert_eq!((second.workflows.len(), second.problems.len()), (2, 1));
         assert!(second.problems[0].file.ends_with("broken.yaml"));
     }
 }

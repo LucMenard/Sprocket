@@ -56,6 +56,7 @@ impl World {
                 ticket: TicketRef { key: "SIS-244".into(), title: "Fix it".into(), url: "https://x/browse/SIS-244".into() },
                 folder: self.folder.clone(),
                 started_by: "Luc".into(),
+                request: None,
             })
             .unwrap()
     }
@@ -204,6 +205,7 @@ fn starting_checks_the_ticket_the_folder_and_the_limit() {
                 ticket: TicketRef { key: key.into(), title: "t".into(), url: "u".into() },
                 folder: folder.into(),
                 started_by: "Luc".into(),
+                request: None,
             })
             .unwrap_err()
             .kind
@@ -311,6 +313,7 @@ impl World {
                 ticket: TicketRef { key: "SIS-245".into(), title: "Many files".into(), url: "u".into() },
                 folder: self.folder.clone(),
                 started_by: "Luc".into(),
+                request: None,
             })
             .unwrap()
     }
@@ -367,7 +370,9 @@ fn a_loop_runs_its_items_two_at_a_time_and_gives_their_results() {
 
     // The action is an agent told to do one thing
     let starts = w.starts();
-    assert!(starts[4].1.contains("Add this comment to the Jira ticket SIS-245, exactly as written:\n\nFixed [\n  \"a.rs\""));
+    assert!(starts[4].1.contains("Add this comment to the Jira ticket SIS-245, exactly as written, with its last line:\n\nFixed [\n  \"a.rs\""));
+    // Signed, so Tracket shows it came from Sprocket
+    assert!(starts[4].1.contains("\n\n— Posted by Sprocket · Rich #1\n"), "{}", starts[4].1);
     w.end(&starts[4].0, "Commented");
     let starts = w.starts();
     assert!(starts[5].1.contains("## Input from earlier steps\n\n[\n  \"A done\",\n  \"B done\",\n  \"C done\"\n]"));
@@ -904,6 +909,77 @@ impl Sink for HostSink {
 /// the helper knows, over the board, and finish with it. Costs a few cents:
 /// `cargo test --lib live_team -- --ignored --nocapture`
 #[test]
+fn a_request_reaches_the_prompts_and_templates_and_is_required() {
+    let w = world();
+    // Written next to fix-a-bug on first start
+    let start = |request: Option<&str>| {
+        w.engine.start_run(StartRun {
+            workflow: "ask-an-agent".into(),
+            ticket: TicketRef { key: "SIS-7".into(), title: "Slow page".into(), url: "u".into() },
+            folder: w.folder.clone(),
+            started_by: "Luc".into(),
+            request: request.map(String::from),
+        })
+    };
+    assert_eq!(start(None).unwrap_err().kind, "invalid");
+    assert_eq!(start(Some("  ")).unwrap_err().kind, "invalid");
+
+    let run = start(Some("Cache the list")).unwrap();
+    assert_eq!(run.request.as_deref(), Some("Cache the list"));
+    let (plan, prompt) = w.last_start();
+    assert!(prompt.contains("## What was asked\n\nCache the list"), "{prompt}");
+    w.end(&plan, "1. add a cache");
+    let view = w.run(&run.id);
+    w.engine.decide(&view.approvals[0].id, true, None, "Luc").unwrap();
+    assert!(w.last_start().1.contains("## What was asked\n\nCache the list"));
+
+    w.with("echo", "name: Echo\nforRequests: true\nsteps:\n- id: say\n  agent: builder\n  instructions: 'Do: {{ request }}'\n");
+    let run = w.engine.start_run(StartRun {
+        workflow: "echo".into(),
+        ticket: TicketRef { key: "SIS-8".into(), title: "t".into(), url: "u".into() },
+        folder: w.folder.clone(),
+        started_by: "Luc".into(),
+        request: Some("rename foo".into()),
+    });
+    assert!(run.is_ok(), "{:?}", run.err());
+    assert!(w.last_start().1.contains("Do: rename foo"));
+    // A workflow without forRequests doesn't need one
+    assert!(w.start().request.is_none());
+}
+
+#[test]
+fn tickets_sum_up_their_latest_run() {
+    let w = world();
+    let first = w.start();
+    let (plan, _) = w.last_start();
+    w.end(&plan, "the plan");
+    let other = w.start_wf("fix-a-bug");
+    w.fail(&w.last_start().0);
+
+    let tickets = w.engine.tickets().unwrap();
+    assert_eq!(tickets.len(), 2);
+    let waiting = tickets.iter().find(|t| t.ticket_key == "SIS-244").unwrap();
+    assert_eq!((waiting.run_id.as_str(), waiting.state.as_str()), (first.id.as_str(), "waiting"));
+    assert_eq!(waiting.approval_summary.as_deref(), Some("the plan"));
+    assert!(waiting.approval_id.is_some() && waiting.failed_job_id.is_none());
+    assert_eq!(waiting.approval_kind.as_deref(), Some("gate"));
+    let failed = tickets.iter().find(|t| t.ticket_key == "SIS-245").unwrap();
+    assert_eq!((failed.run_id.as_str(), failed.state.as_str()), (other.id.as_str(), "failed"));
+    assert_eq!(failed.failed_job_id.as_deref(), Some(other.jobs[0].id.as_str()));
+    // Closing a failed run takes its "failed" away
+    w.engine.cancel_run(&other.id, "Luc").unwrap();
+    let closed = w.engine.tickets().unwrap();
+    assert_eq!(closed.iter().find(|t| t.ticket_key == "SIS-245").unwrap().state, "cancelled");
+
+    // A newer run on the ticket takes its place
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let newer = w.start();
+    let tickets = w.engine.tickets().unwrap();
+    let latest = tickets.iter().find(|t| t.ticket_key == "SIS-244").unwrap();
+    assert_eq!((latest.run_id.as_str(), latest.working), (newer.id.as_str(), 1));
+}
+
+#[test]
 #[ignore]
 fn live_team() {
     let dir = tempfile::tempdir().unwrap();
@@ -937,6 +1013,7 @@ fn live_team() {
             ticket: TicketRef { key: "SIS-1".into(), title: "Live team".into(), url: "u".into() },
             folder: dir.path().display().to_string(),
             started_by: "test".into(),
+            request: None,
         })
         .unwrap();
     wait("the run to end", &|| !matches!(engine.run(&run.id).unwrap().state.as_str(), "running" | "waiting"), 300);

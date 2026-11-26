@@ -268,6 +268,13 @@ export function WorkflowInspector({
               <span className="text-xs text-ct-text-3">In the ticket's Agents menu</span>
             </span>
           </label>
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input type="checkbox" className="mt-0.5 size-4" checked={draft.forRequests} onChange={(e) => editing.setField('forRequests', e.target.checked)} />
+            <span className="flex flex-col gap-0.5">
+              <span className="font-medium">Runs what you ask</span>
+              <span className="text-xs text-ct-text-3">Tracket's "Ask an agent" starts it with what you typed; steps read it as {'{{ request }}'}</span>
+            </span>
+          </label>
         </>
       )}
 

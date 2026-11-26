@@ -13,7 +13,7 @@ export function RunHeader({ run }: { run: Run }) {
   const done = () => queryClient.invalidateQueries({ queryKey: ['runs'] })
   const cancel = useMutation({ mutationFn: () => api.cancelRun(run.id), onSettled: done })
   const again = useMutation({
-    mutationFn: () => api.startRun({ workflow: run.workflowId, ticket: run.ticket, folder: run.folder, startedBy: 'Sprocket' }),
+    mutationFn: () => api.startRun({ workflow: run.workflowId, ticket: run.ticket, folder: run.folder, startedBy: 'Sprocket', request: run.request ?? undefined }),
     onSuccess: (next) => select(next.id),
     onSettled: done,
   })
@@ -55,6 +55,7 @@ export function RunFacts({ run }: { run: Run }) {
     ['Steps', `${done} of ${run.steps.length} done`],
   ]
   if (run.costUsd) facts.push(['Cost', usd(run.costUsd)])
+  if (run.request) facts.unshift(['Asked', run.request])
 
   return (
     <div className="ct-card flex flex-wrap items-center gap-x-6 gap-y-2.5 px-4 py-3 text-[13px]">

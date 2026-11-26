@@ -23,6 +23,9 @@ pub struct Out {
 
 pub struct RunRow {
     pub id: String,
+    pub number: i64,
+    /// What someone asked for, on a run started from a request
+    pub request: Option<String>,
     pub wf: Workflow,
     pub ticket_key: String,
     pub ticket_title: String,
@@ -53,14 +56,24 @@ pub fn activity(conn: &Connection, run_id: &str, job_id: Option<&str>, what: &st
 pub fn load_run(conn: &Connection, run_id: &str) -> Result<RunRow> {
     let row = conn
         .query_row(
-            "SELECT workflow_json, ticket_key, ticket_title, ticket_url, folder, state FROM runs WHERE id = ?1",
+            "SELECT workflow_json, ticket_key, ticket_title, ticket_url, folder, state, number, request FROM runs WHERE id = ?1",
             [run_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
         )
         .optional()?
         .ok_or_else(|| AppError::new("notFound", "No such run"))?;
     let wf = serde_json::from_str(&row.0).map_err(|e| AppError::new("database", format!("Run {run_id}: {e}")))?;
-    Ok(RunRow { id: run_id.into(), wf, ticket_key: row.1, ticket_title: row.2, ticket_url: row.3, folder: row.4, state: row.5 })
+    Ok(RunRow {
+        id: run_id.into(),
+        number: row.6,
+        request: row.7,
+        wf,
+        ticket_key: row.1,
+        ticket_title: row.2,
+        ticket_url: row.3,
+        folder: row.4,
+        state: row.5,
+    })
 }
 
 pub fn set_run_state(conn: &Connection, run_id: &str, state: &str) -> Result<()> {
@@ -219,6 +232,9 @@ fn value_of(job: &Job) -> Value {
 /// The value of a path (`steps.triage.output.files`, `file`) for a step running in `scope`.
 fn lookup(conn: &Connection, run: &RunRow, scope: &str, path: &[String]) -> Result<Value> {
     let parts = scope_parts(scope);
+    if path[0] == "request" {
+        return Ok(run.request.clone().map(Value::String).unwrap_or(Value::Null));
+    }
     if path[0] == "steps" {
         let (Some(id), Some(place)) = (path.get(1), path.get(1).and_then(|id| run.wf.find(id))) else {
             return Ok(Value::Null);
@@ -326,6 +342,11 @@ pub fn agent_spec(wf: &Workflow, agent_id: &str) -> Result<AgentSpec> {
     })
 }
 
+/// The last line of a comment an action posts: Tracket finds it to show the comment came from Sprocket.
+pub fn comment_signature(run: &RunRow) -> String {
+    format!("— Posted by Sprocket · {} #{}", run.wf.name, run.number)
+}
+
 fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, feedback: Option<&str>) -> String {
     let mut prompt = format!(
         "Jira ticket {}: {}\n{}\n\nYou are the {} agent of the workflow \"{}\", run by Sprocket. Your step: {}.\n",
@@ -342,7 +363,12 @@ fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, fee
         let text = render(conn, run, scope, &action.text);
         let to = action.to.as_deref().map(|t| render(conn, run, scope, t)).unwrap_or_default();
         prompt.push_str(&match action.kind {
-            ActionKind::Comment => format!("\nAdd this comment to the Jira ticket {}, exactly as written:\n\n{text}\n", run.ticket_key),
+            // Signed, so Tracket can show it came from Sprocket
+            ActionKind::Comment => format!(
+                "\nAdd this comment to the Jira ticket {}, exactly as written, with its last line:\n\n{text}\n\n{}\n",
+                run.ticket_key,
+                comment_signature(run)
+            ),
             ActionKind::Status => {
                 let note = if text.trim().is_empty() { String::new() } else { format!("\n{text}\n") };
                 format!("\nMove the Jira ticket {} to the status \"{to}\".\n{note}", run.ticket_key)
@@ -352,6 +378,9 @@ fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, fee
         });
         prompt.push_str("\nDo only this, nothing else, then answer with one line saying what you did.\n");
         return prompt;
+    }
+    if let Some(request) = &run.request {
+        prompt.push_str(&format!("\n## What was asked\n\n{request}\n"));
     }
     if has_mcp {
         prompt.push_str("Read the ticket (description, comments, linked issues) with your Jira tools when you need its details.\n");

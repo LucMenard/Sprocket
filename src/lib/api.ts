@@ -58,6 +58,8 @@ export interface WorkflowDraft {
   name: string
   description: string
   offerInTracket: boolean
+  /** Runs what someone asks in words (Tracket's "Ask an agent"), read as `{{ request }}` */
+  forRequests: boolean
   maxParallelRuns: number
   /** A board its runs' agents and people share */
   board: boolean
@@ -156,6 +158,7 @@ export interface Workflow {
   name: string
   description: string
   offerInTracket: boolean
+  forRequests: boolean
   maxParallelRuns: number
   board: boolean
   layout: Record<string, Point>
@@ -258,6 +261,8 @@ export interface Run {
   ticket: Ticket
   folder: string
   startedBy: string
+  /** What someone asked for, on a run started from a request */
+  request: string | null
   state: RunState
   startedAt: string
   endedAt: string | null
@@ -291,6 +296,8 @@ export interface StartRunRequest {
   ticket: Ticket
   folder: string
   startedBy: string
+  /** What you want done, for a workflow that runs requests */
+  request?: string
 }
 
 export const inTauri = '__TAURI_INTERNALS__' in window

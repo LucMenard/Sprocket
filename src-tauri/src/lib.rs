@@ -26,6 +26,8 @@ pub struct Ctx {
     pub token: String,
     pub data_dir: PathBuf,
     pub workflows_dir: PathBuf,
+    /// To bring the window up on a run Tracket asks to see
+    pub app: AppHandle,
     /// Where the local API listens, or why it doesn't; None while it starts
     api: Mutex<Option<Result<String, String>>>,
     /// The latest calls to the local API, newest first, so Integrations can show Tracket is connected
@@ -104,6 +106,7 @@ fn start(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         token,
         workflows_dir,
         data_dir,
+        app: app.handle().clone(),
         api: Mutex::new(None),
         calls: Mutex::new(VecDeque::new()),
     });

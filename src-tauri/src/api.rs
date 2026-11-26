@@ -84,8 +84,9 @@ async fn workflows(State(ctx): State<Arc<Ctx>>, Query(q): Query<WorkflowsQuery>)
             let items: Vec<_> = list
                 .workflows
                 .into_iter()
-                .filter(|w| !q.offered.unwrap_or(false) || w.offer_in_tracket)
-                .map(|w| json!({ "id": w.id, "name": w.name, "description": w.description }))
+                // A workflow that runs requests is what Tracket's "Ask an agent" starts, so it is offered too
+                .filter(|w| !q.offered.unwrap_or(false) || w.offer_in_tracket || w.for_requests)
+                .map(|w| json!({ "id": w.id, "name": w.name, "description": w.description, "forRequests": w.for_requests }))
                 .collect();
             Json(json!({ "workflows": items })).into_response()
         }
@@ -100,6 +101,20 @@ struct RunsQuery {
 
 async fn list_runs(State(ctx): State<Arc<Ctx>>, Query(q): Query<RunsQuery>) -> Response {
     respond(ctx.engine.runs(q.ticket.as_deref()))
+}
+
+async fn tickets(State(ctx): State<Arc<Ctx>>) -> Response {
+    respond(ctx.engine.tickets().map(|tickets| json!({ "tickets": tickets })))
+}
+
+/// Brings Sprocket's window up on the run, for Tracket's "Open run".
+async fn show_run(State(ctx): State<Arc<Ctx>>, Path(id): Path<String>) -> Response {
+    if let Err(e) = ctx.engine.run(&id) {
+        return from_app(e);
+    }
+    crate::tray::show_main(&ctx.app);
+    let _ = tauri::Emitter::emit(&ctx.app, "show-run", &id);
+    Json(json!({ "ok": true })).into_response()
 }
 
 async fn start_run(State(ctx): State<Arc<Ctx>>, Json(req): Json<StartRun>) -> Response {
@@ -165,6 +180,8 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/workflows", get(workflows))
         .route("/v1/runs", get(list_runs).post(start_run))
+        .route("/v1/tickets", get(tickets))
+        .route("/v1/runs/{id}/show", post(show_run))
         .route("/v1/runs/{id}/cancel", post(cancel))
         .route("/v1/runs/{id}/notes", post(post_note))
         .route("/v1/jobs/{id}/retry", post(retry))
