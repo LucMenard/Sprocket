@@ -115,10 +115,16 @@ fn start(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(ctx.clone());
 
     api::serve(ctx);
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let launch = host::find_claude()
         .ok_or_else(|| "Claude Code isn't installed: no claude.exe in ~/.local/bin or on the PATH".to_string())
-        .and_then(|claude| host::dev_launch(&repo, &claude));
+        .and_then(|claude| {
+            // A debug build runs the host from the repository; an installed one, the exe shipped beside it
+            if cfg!(debug_assertions) {
+                host::dev_launch(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."), &claude)
+            } else {
+                host::bundled_launch(&claude)
+            }
+        });
     host.supervise(launch);
 
     tray::create(app)?;
@@ -168,6 +174,9 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // New versions from GitHub releases, checked against the public key in tauri.conf.json
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
         .invoke_handler(tauri::generate_handler![
             commands::app_status,
@@ -192,6 +201,7 @@ pub fn run() {
             commands::save_agent,
             commands::delete_agent,
             commands::share_agent,
+            commands::stop_agents_for_update,
         ])
         .setup(|app| start(app))
         .on_window_event(|window, event| {

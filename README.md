@@ -110,7 +110,7 @@ Requirements:
 ```bash
 npm install
 npm run host:install
-npm run host:build          # agent-host/dist/host.cjs, which the app runs with node
+npm run host:build          # agent-host/dist/host.cjs, which a debug build runs with node
 npm run tauri dev           # the app with hot reload
 npx tauri build --debug --no-bundle   # src-tauri/target/debug/sprocket.exe
 ```
@@ -131,6 +131,59 @@ Environment variables:
 | `SPROCKET_VIEW` | Debug builds only: the screen to open on (`runs`, `workflows`…) |
 | `SPROCKET_DATA_DIR` | Debug builds only: another data folder (database, workflows, agent types), to try things apart from the real ones |
 | `SPROCKET_CLAUDE_PATH` | The `claude.exe` the agents use (default: `%USERPROFILE%\.local\bin\claude.exe`, then the `PATH`) |
+
+A release build, as the pipeline makes it (the agent host as one exe beside the app, and the installer):
+
+```bash
+npm run release:build       # needs TAURI_SIGNING_PRIVATE_KEY set, for the update signature
+```
+
+### Release notes: changesets
+
+The notes on the release page are written as the work happens, with [Changesets](https://github.com/changesets/changesets).
+Every change to the app adds a changeset, a small file in `.changeset/` that says what changed in a sentence its users
+would understand:
+
+```bash
+npm run changeset            # pick minor for a feature, patch for a fix, then describe it
+npm run changeset -- --empty # for a change nobody will notice (docs, CI, refactor)
+```
+
+Commit the file with the change. A check on pull requests into `main` fails without one when the app's code changed;
+commits pushed straight to `main` aren't checked.
+
+### Releasing
+
+Work lands on `main`; `release` is production. Pushing to `release` is what releases.
+
+1. To release, fast-forward `release` to `main`:
+
+   ```bash
+   git push origin origin/main:release
+   ```
+
+2. The **Release** workflow does the rest. It gathers the changesets into `CHANGELOG.md` and raises the version in
+   `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, commits that to `release` and merges the
+   commit back into `main` (so the changesets aren't gathered twice). Then it lints and tests, builds the agent host
+   exe (`npm run host:sea`, with the workflow's Node 22 inside it) and the installer, signs the update, publishes
+   `v<version>` with the changelog as its notes, and checks that the release has the installer, its signature and a
+   valid `latest.json`.
+3. Installed apps pick the update up from that `latest.json`: a band under the header offers to install it. Installing
+   stops the agents first; runs that were going show as interrupted and can be retried.
+
+A push to `release` with no changeset to gather releases nothing, since its version is already tagged. If the build
+fails after the version commit, run the **Release** workflow again from the **Actions** tab, on the `release` branch.
+
+Updates are signed with a key kept outside the repository. Make it once:
+
+```bash
+npx tauri signer generate -w ~/.tauri/sprocket.key
+```
+
+Put the public key (`~/.tauri/sprocket.key.pub`) in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`, and the
+private key and its password in the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The workflow refuses to release without them. **Keep a backup of that key**:
+apps already installed accept updates signed by it only, so losing it means everyone has to reinstall by hand.
 
 ## Third-party notices
 

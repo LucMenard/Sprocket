@@ -3,6 +3,7 @@ import { AgentsView } from '@/features/agents/AgentsView'
 import { IntegrationsView } from '@/features/integrations/IntegrationsView'
 import { OverviewView } from '@/features/overview/OverviewView'
 import { RunsView } from '@/features/runs/RunsView'
+import { UpdateNotice } from '@/features/update/UpdateNotice'
 import { useRuns, useRunsLive } from '@/features/runs/useRuns'
 import { WorkflowsView } from '@/features/workflows/WorkflowsView'
 import { useNav, type ViewId } from '@/lib/nav'
@@ -24,6 +25,7 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col bg-ct-page text-ct-text">
       <AppHeader waiting={waiting} />
+      <UpdateNotice />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <View />
       </main>

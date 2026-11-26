@@ -233,20 +233,27 @@ pub fn find_claude() -> Option<PathBuf> {
     })
 }
 
-/// In development: `node agent-host/dist/host.cjs`. The bundled sidecar comes with packaging.
+fn host_args(claude: &Path) -> Vec<String> {
+    vec!["--claude".into(), claude.display().to_string(), "--settings".into(), "user,project".into()]
+}
+
+/// In development: `node agent-host/dist/host.cjs`, from the repository.
 pub fn dev_launch(repo: &Path, claude: &Path) -> Result<Launch, String> {
     let script = repo.join("agent-host").join("dist").join("host.cjs");
     if !script.is_file() {
         return Err(format!("{} is missing: run `npm run host:build`", script.display()));
     }
-    Ok(Launch {
-        program: PathBuf::from("node"),
-        args: vec![
-            script.display().to_string(),
-            "--claude".into(),
-            claude.display().to_string(),
-            "--settings".into(),
-            "user,project".into(),
-        ],
-    })
+    let mut args = vec![script.display().to_string()];
+    args.extend(host_args(claude));
+    Ok(Launch { program: PathBuf::from("node"), args })
+}
+
+/// Installed: the agent host exe the installer puts next to the app (`externalBin`, built by `npm run host:sea`).
+pub fn bundled_launch(claude: &Path) -> Result<Launch, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let host = exe.with_file_name("sprocket-agent-host.exe");
+    if !host.is_file() {
+        return Err(format!("{} is missing: reinstall Sprocket", host.display()));
+    }
+    Ok(Launch { program: host, args: host_args(claude) })
 }

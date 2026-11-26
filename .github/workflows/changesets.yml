@@ -1,0 +1,48 @@
+name: Changesets
+
+# What the release page says comes from changesets: one small file per feature or fix, written with the change
+# (see .changeset/README.md). A pull request into main must come with one (or an empty one, saying it needs no
+# release note). Commits pushed straight to main aren't checked: add their changeset in the same commit. They are
+# gathered into CHANGELOG.md when main is pushed to release (release.yml).
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: changesets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required:
+    name: Has a changeset
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the pull request
+        # Dependency updates have nothing to describe
+        if: github.actor != 'dependabot[bot]'
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          changed="$(git diff --name-only "origin/$BASE...HEAD")"
+
+          # Only a change to the app itself needs a note on the release page
+          if ! echo "$changed" | grep -Eq '^(src/|src-tauri/src/|src-tauri/capabilities/|agent-host/src/|agents/|workflows/|index\.html$|public/)'; then
+            echo "::notice::This pull request doesn't change the app, so it needs no changeset."
+            exit 0
+          fi
+
+          if echo "$changed" | grep -E '^\.changeset/[^/]+\.md$' | grep -vq 'README\.md$'; then
+            echo "Found a changeset."
+            exit 0
+          fi
+
+          cat <<'MSG'
+          ::error title=Missing changeset::Add a changeset: run "npm run changeset", pick minor for a feature or patch for a fix, and describe the change for the people who use Sprocket. If nobody will notice the change, run "npm run changeset -- --empty" instead. Commit the file it creates.
+          MSG
+          exit 1

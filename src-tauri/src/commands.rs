@@ -183,3 +183,11 @@ pub async fn delete_agent(ctx: State<'_, Arc<Ctx>>, id: String) -> Result<()> {
 pub async fn share_agent(ctx: State<'_, Arc<Ctx>>, workflow: String, id: String) -> Result<agent::AgentType> {
     catalog::share_agent(&dirs(&ctx), &workflow, &id)
 }
+
+/// Before an update is installed: the installer replaces the agent host exe, which it can't while it runs, and
+/// it ends the app without the usual quit. The agents stop; their runs show as interrupted and can be retried.
+#[tauri::command]
+pub fn stop_agents_for_update(ctx: State<'_, Arc<Ctx>>) {
+    log::info!("Stopping the agents to install an update");
+    ctx.host.shutdown();
+}

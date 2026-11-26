@@ -1,0 +1,270 @@
+name: Release
+
+# main is where the work lands, each change with a changeset (see .changeset/README.md). release is production.
+# Pushing to it (fast-forward it to main) ships everything main has gathered:
+#
+#   1. version:   the changesets are gathered into CHANGELOG.md and the version is raised in package.json,
+#                 src-tauri/tauri.conf.json and src-tauri/Cargo.toml (all three must agree). That is committed
+#                 to release.
+#   2. sync-main: that commit is merged back into main, so its changesets aren't gathered a second time.
+#   3. build:     the agent host exe and the installer are built, signed for the updater and published as
+#                 v<version>, with latest.json, which installed apps read to update themselves.
+#
+# A push that leaves the version as it is (already tagged) releases nothing. Run the workflow by hand from the
+# Actions tab, on the release branch, to build a version whose build failed.
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Gather the changesets
+    # A manual run can pick any branch: only release ships
+    if: github.ref_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.commit.outputs.version }}
+      bumped: ${{ steps.commit.outputs.bumped }}
+    steps:
+      # The branch itself, not the commit that started the run: a re-run must see the version commit made by the first
+      - uses: actions/checkout@v7
+        with:
+          ref: release
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - id: commit
+        env:
+          # Lets the changelog link each entry to its pull request
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # `changeset version` fails when there is nothing to gather, so only ask it when a changeset is waiting
+          if [ -n "$(find .changeset -maxdepth 1 -name '*.md' ! -name README.md)" ]; then
+            npm run version-packages
+          fi
+
+          version="$(node -p "require('./package.json').version")"
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            # Changesets that say "no release note" are gathered too, without a new version
+            if git diff --cached --quiet -- package.json; then
+              git commit -m "Gather the changesets that need no release note"
+            else
+              git commit -m "Release v$version"
+            fi
+            # Not rejected unless someone pushed to release since this run began: then run it again
+            git push origin HEAD:release
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No changeset to gather: the version stays $version."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  sync-main:
+    name: Bring the version back to main
+    needs: version
+    if: needs.version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Merge release into main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # main may have moved while this ran: take it as it is now, merge again, and retry the push
+          for attempt in 1 2 3; do
+            git fetch origin main release
+            git reset --hard origin/main
+            if ! git merge --no-ff origin/release -m "Bring release v$VERSION back into main"; then
+              git merge --abort
+              echo "::error::release v$VERSION doesn't merge into main cleanly. Merge release into main by hand: until then the next release would gather these changesets again."
+              exit 1
+            fi
+            git push origin HEAD:main && exit 0
+          done
+          echo "::error::main keeps moving: merge release into it by hand."
+          exit 1
+
+  check:
+    name: Is there a version to release?
+    needs: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          for found in \
+            "$(node -p "require('./package.json').version")" \
+            "$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)"; do
+            if [ "$found" != "$version" ]; then
+              echo "::error::The versions disagree: tauri.conf.json says $version but another file says $found. package.json, tauri.conf.json and Cargo.toml must all say the same."
+              exit 1
+            fi
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$version is already released. Add a changeset to main to ship something new."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$version has not been released yet: building it."
+          fi
+
+  build:
+    name: Build and publish v${{ needs.check.outputs.version }}
+    needs: [version, check]
+    if: needs.check.outputs.release == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The version commit, which has the new version and the changelog
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      # Without them the release would publish updates installed apps refuse, or none at all
+      - name: Check the updater can be signed
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The repository secret TAURI_SIGNING_PRIVATE_KEY is missing (see Releasing in the README)."
+            exit 1
+          fi
+          if grep -q 'REPLACE_WITH_THE_UPDATER_PUBLIC_KEY' src-tauri/tauri.conf.json; then
+            echo "::error::src-tauri/tauri.conf.json has no updater public key yet (see Releasing in the README)."
+            exit 1
+          fi
+
+      # This Node becomes the agent host's runtime, inside its exe: keep it on a known major
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-host/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+      - run: npm ci --prefix agent-host
+
+      # Nothing is released that doesn't pass what CI checks
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run typecheck --prefix agent-host
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      # The agent host as one exe, which the installer ships beside the app (externalBin)
+      - run: npm run host:sea
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Signs the update, so installed apps only accept what this repository built
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --config src-tauri/tauri.release.conf.json
+          tagName: v${{ env.VERSION }}
+          releaseName: Sprocket v${{ env.VERSION }}
+          releaseCommitish: ${{ needs.version.outputs.sha }}
+          releaseDraft: false
+          prerelease: false
+
+      # The installed apps update from latest.json: a release without it, or without a signature, would strand them
+      - name: Check the release can be installed and updated
+        shell: bash
+        run: |
+          assets="$(gh release view "v$VERSION" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          for pattern in 'setup\.exe$' 'setup\.exe\.sig$' '^latest\.json$'; do
+            echo "$assets" | grep -Eq "$pattern" || { echo "::error::The release has no asset matching $pattern"; exit 1; }
+          done
+          # Not into the workspace: tauri-action leaves its own latest.json there
+          gh release download "v$VERSION" --pattern latest.json --clobber --output "$RUNNER_TEMP/feed.json"
+          node -e "
+            const feed = JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/feed.json', 'utf8'))
+            const win = feed.platforms?.['windows-x86_64'] ?? feed.platforms?.['windows-x86_64-nsis']
+            if (feed.version !== process.env.VERSION) throw new Error('latest.json says ' + feed.version)
+            if (!win?.signature || !win?.url) throw new Error('latest.json has no signed Windows download')
+            console.log('latest.json:', feed.version, win.url)
+          "
+
+      - name: Write the release notes
+        shell: bash
+        run: |
+          {
+            cat <<'EOF'
+          ## Install
+
+          Download **Sprocket_*_x64-setup.exe** below and run it. Windows only. Sprocket runs its agents with
+          [Claude Code](https://docs.claude.com/en/docs/claude-code), which must be installed and signed in on the
+          same computer.
+
+          The installer isn't code-signed yet, so Windows SmartScreen may warn about an unknown publisher:
+          choose **More info**, then **Run anyway**. Updates inside the app are signed and verified.
+
+          Already installed? Sprocket offers this update by itself.
+
+          EOF
+            # What changed: the changesets of this version, gathered in CHANGELOG.md by the version job
+            changes="$(tr -d '\r' < CHANGELOG.md | awk -v v="$VERSION" '$0 == "## " v { found = 1; next } /^## / { found = 0 } found' \
+              | sed -e 's/^### Major Changes$/### Breaking changes/' -e 's/^### Minor Changes$/### New/' -e 's/^### Patch Changes$/### Fixes/')"
+            if [ -n "$(echo "$changes" | tr -d '[:space:]')" ]; then
+              echo "## What's changed"
+              echo
+              echo "$changes"
+            else
+              # A version that was released without a changeset
+              gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="v$VERSION" --jq .body
+            fi
+          } > notes.md
+          gh release edit "v$VERSION" --notes-file notes.md

@@ -5,3 +5,5 @@ spike/sandbox-repo/
 target/
 /dist/
 src-tauri/gen/
+# The agent host exe, built by `npm run host:sea` for release builds
+src-tauri/binaries/
