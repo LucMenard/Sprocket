@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::workflow::AskPolicy;
 
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,26 @@ pub struct AgentSpec {
     pub board: BoardAccess,
     /// The agent types it may ask with `ask_agent`; none: no such tool
     pub colleagues: Vec<Colleague>,
+    /// A team member's stop rules; none: Claude Code's own
+    pub limits: Option<Limits>,
+    /// May only read: tools that change things are refused (a team member that isn't the writer)
+    pub read_only: bool,
+    /// In a team step: the tools to wait for the others, and for the lead, to finish
+    pub team: Option<TeamRole>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Limits {
+    pub max_turns: u32,
+    pub budget_usd: f64,
+    pub minutes: u32,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct TeamRole {
+    pub lead: bool,
+    pub members: Vec<String>,
 }
 
 /// An agent type another one may ask, as the `ask_agent` tool describes it.
@@ -100,6 +120,12 @@ pub enum HostMessage {
     /// An agent asks another agent type a question; the answer comes back as colleague.answer
     #[serde(rename = "colleague.ask", rename_all = "camelCase")]
     ColleagueAsk { request_id: String, job_id: String, agent_type: String, question: String },
+    /// A team member waits until someone else posts on the board (answered by board.answer)
+    #[serde(rename = "board.wait", rename_all = "camelCase")]
+    BoardWait { request_id: String, job_id: String },
+    /// A team's lead ends the step with its result (answered by board.answer)
+    #[serde(rename = "team.finish", rename_all = "camelCase")]
+    TeamFinish { request_id: String, job_id: String, summary: String },
 }
 
 #[cfg(test)]
@@ -125,7 +151,7 @@ mod tests {
             serde_json::to_string(&answer).unwrap(),
             r#"{"type":"tool.answer","askId":"a","behavior":"deny","message":null}"#
         );
-        let spec = AgentSpec { model: "m".into(), ask: AskPolicy::BeforeWrites, tools: vec![], mcp: vec![], instructions: None, board: BoardAccess::Post, colleagues: vec![] };
+        let spec = AgentSpec { model: "m".into(), ask: AskPolicy::BeforeWrites, tools: vec![], mcp: vec![], instructions: None, board: BoardAccess::Post, colleagues: vec![], limits: None, read_only: false, team: None };
         let start = CoreMessage::JobStart { job_id: "j".into(), cwd: "c".into(), prompt: "p".into(), agent: spec, output_schema: None };
         assert!(serde_json::to_string(&start).unwrap().contains(r#""ask":"before-writes""#));
     }

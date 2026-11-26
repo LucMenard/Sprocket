@@ -82,6 +82,7 @@
     --ct-kind-forEach-bg: var(--loop-bg); --ct-kind-forEach: var(--loop-fg);
     --ct-kind-action-bg: #CCFBF1; --ct-kind-action: #115E59;
     --ct-kind-parallel-bg: var(--muted); --ct-kind-parallel: var(--mfg);
+    --ct-kind-team-bg: #E0E7FF; --ct-kind-team: #3730A3;
 
     --ct-wait-card-bg: var(--lit-bg); --ct-wait-card-border: var(--lit-border);
     --ct-approve: #1F7A3F;

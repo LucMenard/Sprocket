@@ -85,6 +85,9 @@ pub struct WorkflowDraft {
     /// None: the default (the agent types the steps use, 3 asks a step)
     #[serde(default)]
     pub colleagues: Option<workflow::Colleagues>,
+    /// None: the defaults
+    #[serde(default)]
+    pub team_limits: Option<workflow::TeamLimits>,
 }
 
 fn non_empty(text: Option<String>) -> Option<String> {
@@ -123,6 +126,9 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
     fn agents_of(steps: &[Step], out: &mut Vec<String>) {
         for s in steps {
             out.extend(s.agent.clone());
+            if let Some(t) = &s.team {
+                out.extend(t.members.iter().cloned());
+            }
             agents_of(&s.children().cloned().collect::<Vec<_>>(), out);
         }
     }
@@ -139,6 +145,11 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
         steps,
         layout: draft.layout,
         colleagues: colleagues_file(draft.colleagues, &used_agents),
+        team_limits: draft.team_limits.filter(|l| *l != workflow::TeamLimits::default()).map(|l| workflow::FileTeamLimits {
+            max_turns: Some(l.max_turns),
+            budget_usd: Some(l.budget_usd),
+            minutes: Some(l.minutes),
+        }),
     }
 }
 
@@ -172,6 +183,7 @@ pub fn create_workflow(dirs: &Dirs, name: &str) -> Result<Workflow> {
         board: true,
         layout: Default::default(),
         colleagues: None,
+        team_limits: None,
         agents: Default::default(),
         steps: vec![step],
     };
@@ -321,6 +333,7 @@ mod tests {
             board: true,
             layout: Default::default(),
             colleagues: None,
+            team_limits: None,
             steps: vec![
                 step("plan", StepKind::Agent, Some("planner"), None, None),
                 step("review", StepKind::Approval, None, Some("steps.plan.output"), Some("plan")),
@@ -339,6 +352,7 @@ mod tests {
             board: true,
             layout: Default::default(),
             colleagues: None,
+            team_limits: None,
             steps: vec![step("plan", StepKind::Agent, Some("nobody"), None, None)],
         };
         assert!(save_workflow(&dirs, "fix-a-bug", broken).unwrap_err().message.contains("doesn't exist"));
@@ -402,6 +416,7 @@ mod tests {
             steps: wf.steps.clone(),
             layout: Default::default(),
             colleagues: Some(c),
+            team_limits: None,
         };
         // The defaults (the steps' agent types, 3 asks): nothing in the file
         save_workflow(&dirs, "fix-a-bug", draft(wf.colleagues.clone())).unwrap();

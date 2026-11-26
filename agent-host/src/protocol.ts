@@ -2,7 +2,7 @@
 // host → core on stdout. Nothing else may be written to stdout; logs go to stderr.
 // The Rust side mirrors these in src-tauri/src/host/protocol.rs. Bump PROTOCOL when either changes.
 
-export const PROTOCOL = 4
+export const PROTOCOL = 5
 
 export type AskPolicy = 'never' | 'before-writes' | 'every-action'
 
@@ -18,6 +18,12 @@ export interface AgentSpec {
   board: BoardAccess
   /** The agent types it may ask with ask_agent; none: no such tool */
   colleagues: { id: string; description: string | null }[]
+  /** A team member's stop rules: turns of its session, its budget, minutes of work (waiting for a person aside) */
+  limits: { maxTurns: number; budgetUsd: number; minutes: number } | null
+  /** Tools that change things are refused (a team member that isn't the writer) */
+  readOnly: boolean
+  /** In a team step: wait_for_note, and finish for the lead */
+  team: { lead: boolean; members: string[] } | null
 }
 
 export type BoardAccess = 'off' | 'read' | 'post'
@@ -52,3 +58,5 @@ export type HostMessage =
   | { type: 'board.post'; requestId: string; jobId: string; message: string; to?: string }
   | { type: 'board.read'; requestId: string; jobId: string; since?: number }
   | { type: 'colleague.ask'; requestId: string; jobId: string; agentType: string; question: string }
+  | { type: 'board.wait'; requestId: string; jobId: string }
+  | { type: 'team.finish'; requestId: string; jobId: string; summary: string }

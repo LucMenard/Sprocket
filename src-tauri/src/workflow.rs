@@ -36,10 +36,72 @@ pub struct FileWorkflow {
     /// Asking other agent types (`ask_agent`): who may be asked, and how often per step
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colleagues: Option<FileColleagues>,
+    /// The most a team step may use; a team step can only ask for less
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_limits: Option<FileTeamLimits>,
     /// Where the editor shows the nodes someone placed by hand, by step (and `$trigger`, `$end`).
     /// Only the editor reads it; the others are laid out automatically
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<String, Point>,
+}
+
+/// A team step as written.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileTeam {
+    /// Agent types working together, two or more
+    pub members: Vec<String>,
+    /// The member that ends the step, with `finish`
+    pub lead: String,
+    /// The one member that may change files; none: nobody does
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<String>,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileTeamLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u32>,
+}
+
+/// A team member's stop rules: turns of its session, its budget, and the team's time.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamLimits {
+    /// Turns of each member's session
+    pub max_turns: u32,
+    /// Dollars each member may spend
+    pub budget_usd: f64,
+    /// Minutes each member may work (time waiting for a person doesn't count)
+    pub minutes: u32,
+}
+
+impl Default for TeamLimits {
+    fn default() -> Self {
+        Self { max_turns: 40, budget_usd: 5.0, minutes: 60 }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Team {
+    pub members: Vec<String>,
+    pub lead: String,
+    pub writer: Option<String>,
+    pub goal: String,
+    pub limits: TeamLimits,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
@@ -90,6 +152,7 @@ fn is_yes(b: &bool) -> bool {
 /// - `if` with `then` and `else`: takes one branch or the other
 /// - `forEach` with `steps`: does those steps for each item of a list, `parallel` at a time
 /// - `branches`: lists of steps that run at the same time; the next step waits for all of them
+/// - `team`: several agent types working on the step together over the board; the lead finishes it
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileStep {
@@ -118,6 +181,8 @@ pub struct FileStep {
     pub steps: Option<Vec<FileStep>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<Vec<FileStep>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<FileTeam>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +265,8 @@ pub enum StepKind {
     ForEach,
     /// Branches that run at the same time
     Parallel,
+    /// Agent types working on one step together
+    Team,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -250,6 +317,9 @@ pub struct Step {
     /// A parallel group's branches
     #[serde(default)]
     pub branches: Vec<Vec<Step>>,
+    /// A team step's members, lead, writer, goal and limits
+    #[serde(default)]
+    pub team: Option<Team>,
 }
 
 impl Step {
@@ -318,6 +388,18 @@ impl Step {
             StepKind::Parallel => {
                 f.branches = Some(self.branches.iter().map(|b| b.iter().map(Step::to_file).collect()).collect());
             }
+            StepKind::Team => {
+                let t = self.team.clone().unwrap_or_else(|| Team { members: vec![], lead: String::new(), writer: None, goal: String::new(), limits: TeamLimits::default() });
+                f.team = Some(FileTeam {
+                    members: t.members,
+                    lead: t.lead,
+                    writer: t.writer.filter(|w| !w.is_empty()),
+                    goal: t.goal.trim().to_string(),
+                    max_turns: Some(t.limits.max_turns),
+                    budget_usd: Some(t.limits.budget_usd),
+                    minutes: Some(t.limits.minutes),
+                });
+            }
         }
         f
     }
@@ -355,6 +437,9 @@ pub struct Workflow {
     /// Who the steps may ask, and how often (older runs: nobody)
     #[serde(default)]
     pub colleagues: Colleagues,
+    /// The most a team step may use
+    #[serde(default)]
+    pub team_limits: TeamLimits,
 }
 
 impl Workflow {
@@ -474,6 +559,9 @@ struct Checker<'a> {
     shared: &'a BTreeMap<String, AgentType>,
     seen: HashSet<String>,
     used: Vec<AgentType>,
+    /// The workflow has a board (teams need it)
+    board: bool,
+    team_limits: TeamLimits,
 }
 
 impl Checker<'_> {
@@ -510,18 +598,19 @@ impl Checker<'_> {
             return Err(format!("Two steps are called `{id}`"));
         }
         let at = |field: &str| format!("Step `{id}`, {field}");
-        let kinds = [s.approval.is_some(), s.action.is_some(), s.condition.is_some(), s.for_each.is_some(), s.branches.is_some()];
+        let kinds = [s.approval.is_some(), s.action.is_some(), s.condition.is_some(), s.for_each.is_some(), s.branches.is_some(), s.team.is_some()];
         let kind = match kinds {
-            [false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
-            [true, false, false, false, false] => StepKind::Approval,
-            [false, true, false, false, false] => StepKind::Action,
-            [false, false, true, false, false] => StepKind::Condition,
-            [false, false, false, true, false] => StepKind::ForEach,
-            [false, false, false, false, true] => StepKind::Parallel,
-            [false, false, false, false, false] => {
-                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach` or `branches`"))
+            [false, false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
+            [true, false, false, false, false, false] => StepKind::Approval,
+            [false, true, false, false, false, false] => StepKind::Action,
+            [false, false, true, false, false, false] => StepKind::Condition,
+            [false, false, false, true, false, false] => StepKind::ForEach,
+            [false, false, false, false, true, false] => StepKind::Parallel,
+            [false, false, false, false, false, true] => StepKind::Team,
+            [false, false, false, false, false, false] => {
+                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches` or `team`"))
             }
-            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach` or `branches`")),
+            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches` or a `team`")),
         };
         // Fields that belong to another kind of step are a mistake, not something to ignore
         let stray = [
@@ -537,6 +626,7 @@ impl Checker<'_> {
             ("parallel", s.parallel.is_some() && kind != StepKind::ForEach),
             ("onItemFailure", s.on_item_failure.is_some() && kind != StepKind::ForEach),
             ("branches", s.branches.is_some() && kind != StepKind::Parallel),
+            ("team", s.team.is_some() && kind != StepKind::Team),
         ];
         if let Some((field, _)) = stray.iter().find(|(_, bad)| *bad) {
             return Err(format!("Step `{id}`: `{field}` doesn't belong on this kind of step"));
@@ -560,6 +650,7 @@ impl Checker<'_> {
             on_item_failure: ItemFailure::Stop,
             steps: Vec::new(),
             branches: Vec::new(),
+            team: None,
         };
         let mut gives: Option<Vec<String>> = None;
         match kind {
@@ -627,6 +718,51 @@ impl Checker<'_> {
                 vis.steps.extend(else_vis.steps);
                 return Ok(step);
             }
+            StepKind::Team => {
+                let t = s.team.clone().unwrap_or_default();
+                if !self.board {
+                    return Err(format!("Step `{id}`: a team talks on the run's board: turn the board on"));
+                }
+                if t.members.len() < 2 {
+                    return Err(format!("Step `{id}`: a team has two members or more"));
+                }
+                for (i, m) in t.members.iter().enumerate() {
+                    if t.members[..i].contains(m) {
+                        return Err(format!("Step `{id}`: `{m}` is in the team twice"));
+                    }
+                    self.agent(&id, m)?;
+                    if self.used.iter().find(|a| &a.id == m).is_some_and(|a| !a.board) {
+                        return Err(format!("Step `{id}`: `{m}` may not post to the board, so it can't work in a team"));
+                    }
+                }
+                if !t.members.contains(&t.lead) {
+                    return Err(format!("Step `{id}`: the lead, `{}`, isn't a member", t.lead));
+                }
+                if let Some(w) = t.writer.as_ref().filter(|w| !t.members.contains(w)) {
+                    return Err(format!("Step `{id}`: the writer, `{w}`, isn't a member"));
+                }
+                if t.goal.trim().is_empty() {
+                    return Err(format!("Step `{id}`: say the team's goal"));
+                }
+                vis.check_template(&t.goal, &at("goal"))?;
+                // A step can ask for less than the workflow's limits, not more
+                let most = self.team_limits;
+                let limits = TeamLimits {
+                    max_turns: t.max_turns.unwrap_or(most.max_turns),
+                    budget_usd: t.budget_usd.unwrap_or(most.budget_usd),
+                    minutes: t.minutes.unwrap_or(most.minutes),
+                };
+                if limits.max_turns == 0 || limits.max_turns > most.max_turns {
+                    return Err(format!("Step `{id}`: `maxTurns` is from 1 to {}, the workflow's limit", most.max_turns));
+                }
+                if !(limits.budget_usd > 0.0 && limits.budget_usd <= most.budget_usd) {
+                    return Err(format!("Step `{id}`: `budgetUsd` is more than 0 and at most {}, the workflow's limit", most.budget_usd));
+                }
+                if limits.minutes == 0 || limits.minutes > most.minutes {
+                    return Err(format!("Step `{id}`: `minutes` is from 1 to {}, the workflow's limit", most.minutes));
+                }
+                step.team = Some(Team { members: t.members, lead: t.lead, writer: t.writer.filter(|w| !w.is_empty()), goal: t.goal, limits });
+            }
             StepKind::Parallel => {
                 let lanes = s.branches.unwrap_or_default();
                 if lanes.len() < 2 || lanes.iter().any(Vec::is_empty) {
@@ -680,7 +816,19 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
     if w.steps.is_empty() {
         return Err("A workflow needs at least one step".into());
     }
-    let mut checker = Checker { own: &w.agents, shared, seen: HashSet::new(), used: Vec::new() };
+    let team_limits = {
+        let file = w.team_limits.clone().unwrap_or_default();
+        let base = TeamLimits::default();
+        TeamLimits {
+            max_turns: file.max_turns.unwrap_or(base.max_turns),
+            budget_usd: file.budget_usd.unwrap_or(base.budget_usd),
+            minutes: file.minutes.unwrap_or(base.minutes),
+        }
+    };
+    if team_limits.max_turns == 0 || team_limits.budget_usd <= 0.0 || team_limits.minutes == 0 {
+        return Err("`teamLimits` are more than 0".into());
+    }
+    let mut checker = Checker { own: &w.agents, shared, seen: HashSet::new(), used: Vec::new(), board: w.board, team_limits };
     let steps = checker.block(w.steps.clone(), &mut Visible::default())?;
     let file_colleagues = w.colleagues.clone().unwrap_or_default();
     let can_ask = match file_colleagues.can_ask {
@@ -708,6 +856,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         agents: used,
         // Positions of steps that no longer exist are dropped
         colleagues: Colleagues { can_ask, max_asks },
+        team_limits,
         layout: w.layout.into_iter().filter(|(k, _)| k == "$trigger" || k == "$end" || checker_seen(&steps, k)).collect(),
         steps,
     })
@@ -862,6 +1011,7 @@ steps:
             steps: w.steps.iter().map(Step::to_file).collect(),
             layout: BTreeMap::new(),
             colleagues: None,
+            team_limits: None,
         };
         let again = parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap();
         assert_eq!(serde_json::to_value(&again.steps).unwrap(), serde_json::to_value(&w.steps).unwrap());
@@ -912,6 +1062,42 @@ layout:
         let w = parse("t", "t.yaml", yaml, &shared()).unwrap();
         assert_eq!(w.layout.keys().map(String::as_str).collect::<Vec<_>>(), ["$end", "a"]);
         assert_eq!(w.layout["a"], Point { x: 300, y: 120 });
+    }
+
+    const TEAM: &str = "name: T
+teamLimits: { maxTurns: 30, budgetUsd: 4, minutes: 45 }
+steps:
+- id: design
+  team:
+    members: [planner, builder]
+    lead: planner
+    writer: builder
+    goal: Agree on the change and make it
+    maxTurns: 20
+- id: after
+  agent: planner
+  input: steps.design.output
+";
+
+    #[test]
+    fn reads_a_team_step_and_its_limits() {
+        let w = parse("t", "t.yaml", TEAM, &shared()).unwrap();
+        let t = w.steps[0].team.as_ref().unwrap();
+        assert_eq!((t.lead.as_str(), t.writer.as_deref()), ("planner", Some("builder")));
+        // The step's own limit, the workflow's for the rest
+        assert_eq!(t.limits, TeamLimits { max_turns: 20, budget_usd: 4.0, minutes: 45 });
+        assert_eq!(w.team_limits.max_turns, 30);
+        let bad = |from: &str, to: &str| err(&TEAM.replacen(from, to, 1));
+        assert!(bad("maxTurns: 20", "maxTurns: 50").contains("the workflow's limit"));
+        assert!(bad("members: [planner, builder]", "members: [planner]").contains("two members"));
+        assert!(bad("lead: planner", "lead: nobody").contains("isn't a member"));
+        assert!(bad("writer: builder", "writer: nobody").contains("isn't a member"));
+        assert!(bad("goal: Agree on the change and make it", "goal: ' '").contains("goal"));
+        assert!(bad("name: T", "name: T
+board: false").contains("board"));
+        assert!(bad("    goal:", "    agent: planner
+    goal:").contains("only one of") || bad("    goal:", "    agent: planner
+    goal:").contains("unknown field"));
     }
 
     #[test]

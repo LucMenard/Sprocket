@@ -9,6 +9,7 @@
 
 mod board;
 mod colleagues;
+mod team;
 mod steps;
 mod views;
 #[cfg(test)]
@@ -181,11 +182,16 @@ impl Engine {
                 return Err(AppError::new("conflict", format!("The run is {}: resume it before deciding", run.state)));
             }
             let gate = steps::job(conn, &job_id)?.ok_or_else(|| AppError::new("notFound", "No such job"))?;
+            if gate.kind == "team" {
+                // A team stopped at a limit: go on, or fail the step
+                team::decide_limit(conn, &run, &gate, approve, out)?;
+                return steps::drive(conn, &run_id, out);
+            }
             if approve {
                 steps::end_job(conn, &job_id, Ended { output: reason.as_deref(), ..Ended::new("done") })?;
             } else {
                 steps::end_job(conn, &job_id, Ended { error: reason.as_deref(), ..Ended::new("rejected") })?;
-                board::note_rejection(conn, &run, &gate, by, reason.as_deref())?;
+                board::note_rejection(conn, &run, &gate, by, reason.as_deref(), out)?;
                 let feedback = reason.unwrap_or_else(|| "Rejected without a reason".into());
                 steps::send_back(conn, &run, &gate, feedback, out)?;
             }
@@ -195,9 +201,9 @@ impl Engine {
 
     /// A person's note on a run's board, for everyone or for someone (`to`: a step or an agent type).
     pub fn post_note(&self, run_id: &str, by: &str, body: &str, to: Option<&str>) -> Result<NoteView> {
-        self.change(|conn, _| {
+        self.change(|conn, out| {
             board::person_may_post(conn, run_id)?;
-            let id = board::post(conn, run_id, board::NewNote { job_id: None, author: by, agent: None, to, body })?;
+            let id = board::post(conn, run_id, board::NewNote { job_id: None, author: by, agent: None, to, body }, out)?;
             Ok(board::notes(conn, run_id, Some(id - 1))?.remove(0))
         })
     }
@@ -208,7 +214,7 @@ impl Engine {
             if !steps::is_active(&run.state) && run.state != "interrupted" {
                 return Err(AppError::new("conflict", format!("The run is already {}", run.state)));
             }
-            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask') AND state IN ('running', 'waiting')")?;
+            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask', 'member') AND state IN ('running', 'waiting')")?;
             let running: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
             for job_id in running {
                 out.messages.push(CoreMessage::JobStop { job_id });

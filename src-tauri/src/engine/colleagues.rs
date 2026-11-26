@@ -15,7 +15,7 @@ use super::steps::{self, Job, Out, RunRow};
 
 /// The agent type doing a job: an ask's is in its step id.
 pub fn agent_of(run: &RunRow, job: &Job) -> Option<String> {
-    if job.kind == "ask" {
+    if job.kind == "ask" || job.kind == "member" {
         return job.step_id.split_once('~').map(|(_, agent)| agent.to_string());
     }
     run.wf.find(&job.step_id).and_then(|p| p.step.agent.clone())
@@ -139,9 +139,12 @@ pub fn on_answered(conn: &Connection, ask: &Job, answer: std::result::Result<&st
 pub fn stop_asks_of(conn: &Connection, job_id: &str, out: &mut Out) -> Result<()> {
     let mut stmt = conn.prepare("SELECT id FROM jobs WHERE parent_job = ?1 AND state IN ('running', 'waiting')")?;
     let asks: Vec<String> = stmt.query_map([job_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let run_id: String = conn.query_row("SELECT run_id FROM jobs WHERE id = ?1", [job_id], |r| r.get(0))?;
     for id in asks {
         out.messages.push(CoreMessage::JobStop { job_id: id.clone() });
         steps::end_job(conn, &id, steps::Ended::new("stopped"))?;
+        // What it was asking a person for can't be answered any more
+        steps::expire_approvals(conn, &run_id, Some(&id), false)?;
     }
     Ok(())
 }

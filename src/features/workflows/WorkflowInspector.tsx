@@ -459,6 +459,103 @@ export function WorkflowInspector({
             </>
           )}
 
+          {step.kind === 'team' && step.team && (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <span className="ct-label">Members</span>
+                <div role="group" aria-label="Members" className="flex flex-wrap gap-1.5">
+                  {agents.map((a) => {
+                    const t = step.team!
+                    const on = t.members.includes(a.id)
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="ct-chip"
+                        aria-pressed={on}
+                        onClick={() => {
+                          const members = on ? t.members.filter((m) => m !== a.id) : [...t.members, a.id]
+                          set({
+                            team: {
+                              ...t,
+                              members,
+                              lead: members.includes(t.lead) ? t.lead : (members[0] ?? ''),
+                              writer: t.writer && members.includes(t.writer) ? t.writer : null,
+                            },
+                          })
+                        }}
+                      >
+                        {a.id}
+                      </button>
+                    )
+                  })}
+                </div>
+                <span className="text-xs text-ct-text-3">Two or more. They work at the same time and talk on the run's board.</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Lead" htmlFor="n-lead" help="Ends the step with its result.">
+                  <select id="n-lead" className="ct-input" value={step.team.lead} onChange={(e) => set({ team: { ...step.team!, lead: e.target.value } })}>
+                    {step.team.members.map((m) => (
+                      <option key={m}>{m}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Changes files" htmlFor="n-writer" help="The others read and advise.">
+                  <select
+                    id="n-writer"
+                    className="ct-input"
+                    value={step.team.writer ?? ''}
+                    onChange={(e) => set({ team: { ...step.team!, writer: e.target.value || null } })}
+                  >
+                    <option value="">Nobody</option>
+                    {step.team.members.map((m) => (
+                      <option key={m}>{m}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Goal" htmlFor="n-goal" help={<>What the team works out. Use {'{{ … }}'} to put in what it can read.</>}>
+                <textarea
+                  id="n-goal"
+                  rows={4}
+                  className="ct-input h-auto py-2.5 leading-normal"
+                  value={step.team.goal}
+                  onChange={(e) => set({ team: { ...step.team!, goal: e.target.value } })}
+                />
+              </Field>
+              <div className="flex flex-col gap-1.5">
+                <span className="ct-label">Stop rules, for each member</span>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      ['maxTurns', 'turns', 1],
+                      ['budgetUsd', '$', 0.1],
+                      ['minutes', 'minutes', 1],
+                    ] as const
+                  ).map(([key, label, min]) => (
+                    <label key={key} className="flex flex-col gap-1 text-xs text-ct-text-3">
+                      <input
+                        type="number"
+                        min={min}
+                        max={draft.teamLimits[key]}
+                        step={min}
+                        className="ct-input h-9"
+                        value={step.team!.limits[key]}
+                        onChange={(e) =>
+                          set({ team: { ...step.team!, limits: { ...step.team!.limits, [key]: Math.min(draft.teamLimits[key], Math.max(min, Number(e.target.value) || min)) } } })
+                        }
+                      />
+                      {label} (≤ {draft.teamLimits[key]})
+                    </label>
+                  ))}
+                </div>
+                <span className="text-xs text-ct-text-3">
+                  Reaching one stops the team and asks you: go on with the same limits again, or fail the step. Time waiting for you doesn't count.
+                </span>
+              </div>
+            </>
+          )}
+
           {step.kind === 'forEach' && (
             <>
               <Field label="Items to loop over" htmlFor="n-items" help="A list, such as a JSON field of type list.">

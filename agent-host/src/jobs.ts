@@ -41,6 +41,8 @@ type Send = (message: HostMessage) => void
 export class Jobs {
   private readonly running = new Map<string, AbortController>()
   private readonly asks = new Map<string, (result: PermissionResult) => void>()
+  /** Tool asks waiting for a person, by job: a team member's time limit doesn't run meanwhile */
+  private readonly asking = new Map<string, number>()
   private readonly board: BoardRequests
 
   constructor(
@@ -81,18 +83,23 @@ export class Jobs {
 
   private askCore(jobId: string, toolName: string, input: unknown, signal: AbortSignal): Promise<PermissionResult> {
     const askId = randomUUID()
-    return new Promise((resolve) => {
+    this.asking.set(jobId, (this.asking.get(jobId) ?? 0) + 1)
+    const done = () => this.asking.set(jobId, Math.max(0, (this.asking.get(jobId) ?? 1) - 1))
+    return new Promise<PermissionResult>((resolve) => {
       this.asks.set(askId, resolve)
       signal.addEventListener('abort', () => {
         this.asks.delete(askId)
         resolve({ behavior: 'deny', message: 'The job was stopped' })
       })
       this.send({ type: 'tool.ask', askId, jobId, toolName, input })
-    })
+    }).finally(done)
   }
 
   private options(jobId: string, cwd: string, agent: AgentSpec, abortController: AbortController, schema: JsonSchema | null, resume?: string): Options {
+    // A member that isn't the team's writer: only what reads, beside Sprocket's own tools and MCP servers
+    const refused = (toolName: string) => agent.readOnly && !toolName.startsWith('mcp__') && toolName !== STRUCTURED_OUTPUT && !isReadOnly(toolName)
     const canUseTool: CanUseTool = async (toolName, input, { signal }) => {
+      if (refused(toolName)) return { behavior: 'deny', message: 'In this team, another member changes files: tell it on the board' }
       if (agent.ask === 'never' || toolName === STRUCTURED_OUTPUT || isBoardTool(toolName)) return { behavior: 'allow', updatedInput: input }
       if (agent.ask === 'before-writes' && isReadOnly(toolName)) return { behavior: 'allow', updatedInput: input }
       return this.askCore(jobId, toolName, input, signal)
@@ -102,6 +109,15 @@ export class Jobs {
     // "every-action" turns every call into a prompt, since canUseTool only hears about calls that prompt.
     const preToolUse: HookCallback = async (hookInput) => {
       const toolName = 'tool_name' in hookInput ? hookInput.tool_name : ''
+      if (refused(toolName)) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'In this team, another member changes files: tell it on the board',
+          },
+        }
+      }
       if (!mcpAllowed(toolName, agent.mcp)) {
         return {
           hookSpecificOutput: {
@@ -136,6 +152,7 @@ export class Jobs {
         : {}),
       hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
       ...(schema ? { outputFormat: { type: 'json_schema', schema } } : {}),
+      ...(agent.limits ? { maxTurns: agent.limits.maxTurns, maxBudgetUsd: agent.limits.budgetUsd } : {}),
       ...(resume ? { resume } : {}),
       stderr: (line) => process.stderr.write(`[${jobId}] ${line}\n`),
     }
@@ -147,6 +164,19 @@ export class Jobs {
     this.running.set(jobId, abortController)
     let started = false
     let ended = false
+    // A team member's minutes: counted while it works, not while a person is asked something
+    let timedOut = false
+    let worked = 0
+    const clock = agent.limits
+      ? setInterval(() => {
+          if ((this.asking.get(jobId) ?? 0) > 0) return
+          worked += 5
+          if (worked >= agent.limits!.minutes * 60) {
+            timedOut = true
+            abortController.abort()
+          }
+        }, 5000)
+      : undefined
     try {
       for await (const message of query({ prompt, options: this.options(jobId, cwd, agent, abortController, schema, resume) })) {
         if (!started && message.type === 'system' && message.subtype === 'init') {
@@ -170,22 +200,25 @@ export class Jobs {
       }
       // The session ended without a result: the job must still end, or it would hold its run forever
       if (!ended) {
-        const stopped = abortController.signal.aborted
-        this.send({ type: 'job.ended', jobId, result: stopped ? 'stopped' : 'error', output: null, costUsd: null,
-          ...(stopped ? {} : { error: 'The agent session ended without a result' }) })
+        ended = true
+        this.endWithoutResult(jobId, abortController, timedOut, 'The agent session ended without a result')
       }
     } catch (error) {
-      const stopped = abortController.signal.aborted
-      this.send({
-        type: 'job.ended',
-        jobId,
-        result: stopped ? 'stopped' : 'error',
-        output: null,
-        costUsd: null,
-        ...(stopped ? {} : { error: String(error) }),
-      })
+      // The SDK can throw after a result it already gave (a limit reached): that job has ended once already
+      if (!ended) this.endWithoutResult(jobId, abortController, timedOut, String(error))
     } finally {
+      if (clock) clearInterval(clock)
+      this.asking.delete(jobId)
       this.running.delete(jobId)
     }
+  }
+
+  private endWithoutResult(jobId: string, abortController: AbortController, timedOut: boolean, why: string) {
+    if (timedOut) {
+      this.send({ type: 'job.ended', jobId, result: 'error', output: null, costUsd: null, error: 'error_time_limit' })
+      return
+    }
+    const stopped = abortController.signal.aborted
+    this.send({ type: 'job.ended', jobId, result: stopped ? 'stopped' : 'error', output: null, costUsd: null, ...(stopped ? {} : { error: why }) })
   }
 }

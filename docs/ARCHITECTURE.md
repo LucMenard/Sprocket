@@ -231,6 +231,30 @@ The engine works out what runs next from the jobs written so far, after every ch
 branch it took, a loop records its items and starts the next ones as earlier ones finish. Loops are capped at 50
 items and 10 in parallel.
 
+### Team steps
+
+```yaml
+teamLimits: { maxTurns: 40, budgetUsd: 5, minutes: 60 }   # the most a team step may use, per member
+steps:
+  - id: design
+    team:
+      members: [planner, builder, reviewer]
+      lead: planner        # ends the step
+      writer: builder      # the only one that changes files; none when left out
+      goal: Agree on the change and make it
+      maxTurns: 20         # a step can ask for less than teamLimits, not more
+```
+
+The step has a job (`kind: team`) and each member one under it (`kind: member`, step id `<step>~<agent type>`),
+all started at once. Members talk on the board; `wait_for_note` waits until someone else posts or a member ends
+its turn (the core keeps what each member has read, and answers at once when nobody else is working). Only the
+writer gets tools that change things; the others are refused them. Members don't ask colleagues. The lead calls
+`finish(summary)`, or ends its turn once nobody else works (if others still do, it is resumed with a nudge to wait
+for them); the summary is the step's output and the others stop. A member reaching a stop rule (the Agent SDK's
+`maxTurns` and `maxBudgetUsd`, and the host's clock, which stops while a person is asked something) stops the team
+and opens an approval on its job: approve and the members resume their sessions with the same limits again,
+reject and the step fails. A team interrupted by the host going away resumes its members on Retry.
+
 ### Asking a colleague
 
 An agent can call `ask_agent(agentType, question)`, a tool of the same `sprocket` server. The host sends

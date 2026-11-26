@@ -101,6 +101,7 @@ export function emptyStep(id: string, kind: StepKind): WorkflowStep {
     onItemFailure: 'stop',
     steps: [],
     branches: [],
+    team: null,
   }
 }
 

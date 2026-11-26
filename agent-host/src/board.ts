@@ -24,12 +24,21 @@ export class BoardRequests {
     message:
       | { type: 'board.post'; jobId: string; message: string; to?: string }
       | { type: 'board.read'; jobId: string; since?: number }
-      | { type: 'colleague.ask'; jobId: string; agentType: string; question: string },
+      | { type: 'colleague.ask'; jobId: string; agentType: string; question: string }
+      | { type: 'board.wait'; jobId: string }
+      | { type: 'team.finish'; jobId: string; summary: string },
+    /** Gives up after this long, with this answer */
+    timeout?: { ms: number; answer: string },
   ): Promise<Answer> {
     const requestId = randomUUID()
     return new Promise((resolve) => {
       this.waiting.set(requestId, resolve)
       this.send({ ...message, requestId })
+      if (timeout) {
+        setTimeout(() => {
+          if (this.waiting.delete(requestId)) resolve({ text: timeout.answer, error: false })
+        }, timeout.ms).unref()
+      }
     })
   }
 
@@ -47,8 +56,11 @@ export class BoardRequests {
 
 const result = (a: Answer) => ({ content: [{ type: 'text' as const, text: a.text }], isError: a.error })
 
-/** Whether a job gets the server at all: a board to use, or someone to ask */
-export const needsServer = (agent: AgentSpec) => agent.board !== 'off' || agent.colleagues.length > 0
+/** Whether a job gets the server at all: a board to use, someone to ask, a team */
+export const needsServer = (agent: AgentSpec) => agent.board !== 'off' || agent.colleagues.length > 0 || agent.team !== null
+
+/** How long wait_for_note waits before saying nothing came: long, as each try costs a turn */
+const WAIT_MS = 15 * 60_000
 
 /**
  * The tools one job gets: the board's when its workflow has one (posting when its agent type may), and
@@ -88,9 +100,27 @@ export function boardServer(jobId: string, agent: AgentSpec, requests: BoardRequ
     async ({ agentType, question }) => result(await requests.ask({ type: 'colleague.ask', jobId, agentType, question })),
     { alwaysLoad: true },
   )
+  const others = agent.team?.members.join(', ') ?? ''
+  const wait = tool(
+    'wait_for_note',
+    `Waits until someone else in your team (${others}) or a person posts on the board, or a member ends its turn, ` +
+      'and returns what is new. Use it instead of ending your turn while you expect an answer.',
+    {},
+    async () => result(await requests.ask({ type: 'board.wait', jobId }, { ms: WAIT_MS, answer: 'No new note in 15 minutes.' })),
+    { alwaysLoad: true, annotations: { readOnlyHint: true } },
+  )
+  const finish = tool(
+    'finish',
+    "Ends the team's step with its result: what was decided and done. The other members stop. Only the lead calls it.",
+    { summary: z.string().min(1).max(8000).describe("The step's result, for the steps after it and the people following the run") },
+    async ({ summary }) => result(await requests.ask({ type: 'team.finish', jobId, summary })),
+    { alwaysLoad: true },
+  )
   const tools = [
     ...(agent.board === 'off' ? [] : agent.board === 'post' ? [read, post] : [read]),
     ...(agent.colleagues.length ? [ask()] : []),
+    ...(agent.team ? [wait] : []),
+    ...(agent.team?.lead ? [finish] : []),
   ]
   return createSdkMcpServer({ name: BOARD_SERVER, version: '1.0.0', tools })
 }

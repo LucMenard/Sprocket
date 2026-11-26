@@ -13,6 +13,7 @@ export function draftOf(w: Workflow): WorkflowDraft {
     steps: structuredClone(w.steps),
     layout: structuredClone(w.layout ?? {}),
     colleagues: structuredClone(w.colleagues ?? { canAsk: [], maxAsks: 3 }),
+    teamLimits: structuredClone(w.teamLimits ?? { maxTurns: 40, budgetUsd: 5, minutes: 60 }),
     loose: [],
     cut: [],
     extra: [],
@@ -45,6 +46,13 @@ export function draftProblems(d: WorkflowDraft): string[] {
     if (s.kind === 'condition' && !s.then.length && !s.else.length) out.push(`The condition ${s.id} has no branch.`)
     if (s.kind === 'forEach' && !s.steps.length) out.push(`The loop ${s.id} has no steps.`)
     if ((s.kind === 'agent' || s.kind === 'action') && !s.agent) out.push(`${s.id} has no agent type.`)
+    if (s.kind === 'team') {
+      const t = s.team
+      if (!t || t.members.length < 2) out.push(`The team ${s.id} needs two members or more.`)
+      else if (!t.members.includes(t.lead)) out.push(`The team ${s.id} has no lead among its members.`)
+      if (t && !t.goal.trim()) out.push(`The team ${s.id} has no goal.`)
+      if (t && !d.board) out.push(`The team ${s.id} talks on the board: turn the workflow's board on.`)
+    }
   }
   return out
 }
@@ -63,7 +71,7 @@ function freeId(d: WorkflowDraft, base: string, taken: string[] = []) {
   return id
 }
 
-const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together' }
+const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together', team: 'team' }
 
 /** `steps.old.` → `steps.new.` in a text */
 const renameIn = (text: string | null | undefined, from: string, to: string) =>
@@ -307,7 +315,8 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
         }
       }, change.id === undefined ? `step:${id}:${Object.keys(change).join(',')}` : undefined),
     /** Adds a node of `kind` in `slot`, set up from what it can read there; returns its name */
-    addStep: (kind: StepKind, slot: Slot, agent: string | null) => {
+    /** `agents`: who a new team is made of, at first */
+    addStep: (kind: StepKind, slot: Slot, agent: string | null, agents: string[] = []) => {
       if (!current) return null
       const id = freeId(current, BASE[kind])
       update((d) => {
@@ -344,6 +353,11 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
             step.as = 'item'
             step.steps = [work()]
             break
+          case 'team': {
+            const members = agents.slice(0, 2)
+            step.team = { members, lead: members[0] ?? '', writer: members[1] ?? null, goal: '', limits: { ...d.teamLimits } }
+            break
+          }
         }
       })
       return id

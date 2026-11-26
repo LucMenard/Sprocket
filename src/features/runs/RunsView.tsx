@@ -41,6 +41,9 @@ function runFlow(run: Run) {
         const took = jobs.at(-1)?.output === 'then' ? 'then' : jobs.at(-1)?.output === 'else' ? 'else' : undefined
         node.took = took
         if (took) node.sub = `Took ${took === 'then' ? 'yes' : 'no'} · ${s.if}`
+      } else if (s.kind === 'team') {
+        const working = run.jobs.filter((j) => j.kind === 'member' && j.stepId.startsWith(`${s.id}~`) && (j.state === 'running' || j.state === 'waiting'))
+        if (working.length) node.badge = `${working.length} at work`
       } else if (s.kind === 'forEach') {
         const total = itemCount(run, s.id)
         if (jobs.length) node.badge = `${total} item${total === 1 ? '' : 's'}`

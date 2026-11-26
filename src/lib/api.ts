@@ -66,6 +66,8 @@ export interface WorkflowDraft {
   layout: Record<string, Point>
   /** Who the steps may ask with ask_agent, and how many times a step may */
   colleagues: Colleagues
+  /** The most a team step may use */
+  teamLimits: TeamLimits
   /**
    * The editor's own: chains of nodes no link reaches, after a link was deleted. Never saved: the editor won't
    * save while there are any.
@@ -87,7 +89,7 @@ export interface Point {
   y: number
 }
 
-export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel'
+export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team'
 export type OutputType = 'text' | 'number' | 'yes/no' | 'list'
 export type ActionKind = 'comment' | 'status' | 'slack' | 'other'
 
@@ -126,6 +128,27 @@ export interface WorkflowStep {
   steps: WorkflowStep[]
   /** A parallel group's branches: they run at the same time, and the next step waits for all of them */
   branches: WorkflowStep[][]
+  /** A team step: agent types working on it together over the board */
+  team: Team | null
+}
+
+export interface TeamLimits {
+  /** Turns of each member's session */
+  maxTurns: number
+  /** Dollars each member may spend */
+  budgetUsd: number
+  /** Minutes each member may work; waiting for a person doesn't count */
+  minutes: number
+}
+
+export interface Team {
+  members: string[]
+  /** The member that ends the step, with finish(summary) */
+  lead: string
+  /** The one member that may change files; null: nobody does */
+  writer: string | null
+  goal: string
+  limits: TeamLimits
 }
 
 export interface Workflow {
@@ -137,6 +160,7 @@ export interface Workflow {
   board: boolean
   layout: Record<string, Point>
   colleagues: Colleagues
+  teamLimits: TeamLimits
   file: string
   agents: AgentType[]
   steps: WorkflowStep[]
@@ -166,7 +190,7 @@ export interface Job {
   id: string
   stepId: string
   /** `ask`: another agent type answering a question a step asked (its `parentJob`) */
-  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask'
+  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member'
   /** `""` in the workflow itself; `each[2]/` for the third item of the loop `each` */
   scope: string
   /** Redone since (after a rejection or a retry): history only */

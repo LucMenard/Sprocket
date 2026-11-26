@@ -27,6 +27,11 @@ Windows only for now.
     tools the agent host serves itself. You read and post on it from Runs or from Tracket, and a rejection's reason
     lands there for the step that redoes the work. A workflow can turn its board off, and an agent type can be
     kept to reading it.
+  - A **team step** puts several agent types on one step at the same time. They talk on the board
+    (`post_note`, `read_notes`, `wait_for_note`); one of them (the writer) changes files, the others read and
+    advise; the lead ends the step with `finish(summary)`, which becomes its output. Each member has stop rules
+    (turns, dollars, minutes, under the workflow's team limits): reaching one stops the team and asks you whether
+    it goes on. Runs shows the members, their sessions, and the board.
   - An agent can **ask a colleague**: `ask_agent(agentType, question)` runs a short session of that agent type in
     the same worktree, and its answer comes back to the agent. The workflow says who may be asked (the agent types
     its steps use, by default) and how many times a step may ask (3); an agent type can be kept from asking. The

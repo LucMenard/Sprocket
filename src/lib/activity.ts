@@ -36,6 +36,14 @@ export function describe(what: string, detail: string | null): string {
       return `Tool denied by ${d}`
     case 'note.posted':
       return `Note on the board from ${d}`
+    case 'team.started':
+      return `Team at work: ${d}`
+    case 'team.finished':
+      return `Team done: ${d}`
+    case 'team.limit':
+      return `Team stopped at a limit: ${d}`
+    case 'team.resumed':
+      return `Team goes on: ${d}`
     case 'colleague.asked':
       return `Asked ${d}`
     case 'colleague.answered':

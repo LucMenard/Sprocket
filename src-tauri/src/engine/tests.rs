@@ -735,3 +735,220 @@ fn asks_are_limited_and_only_to_who_the_workflow_allows() {
     w.ask("s1", &solo, "loner", "?");
     assert!(w.colleague_answer("s1").unwrap().0.contains("may not ask"));
 }
+
+// ---- Team steps ----
+
+const TEAMWORK: &str = "name: Teamwork\nsteps:\n- id: design\n  team:\n    members: [planner, builder]\n    lead: planner\n    writer: builder\n    goal: Agree on the change and make it\n    maxTurns: 10\n- id: after\n  agent: planner\n  input: steps.design.output\n";
+
+impl World {
+    /// The member jobs started, by agent type: (job id, prompt, spec).
+    fn members(&self) -> Vec<(String, String, AgentSpec)> {
+        self.fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                CoreMessage::JobStart { job_id, prompt, agent, .. } | CoreMessage::JobResume { job_id, prompt, agent, .. } if agent.team.is_some() => {
+                    Some((job_id.clone(), prompt.clone(), agent.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn board_reply(&self, request: &str) -> Option<String> {
+        self.fake.sent.lock().unwrap().iter().find_map(|m| match m {
+            CoreMessage::BoardAnswer { request_id, text, .. } if request_id == request => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    fn stopped(&self, job: &str) -> bool {
+        self.fake.sent.lock().unwrap().iter().any(|m| matches!(m, CoreMessage::JobStop { job_id } if job_id == job))
+    }
+
+    fn team_start(&self) -> (RunView, String, String) {
+        self.with("teamwork", TEAMWORK);
+        let before = self.members().len();
+        let run = self.start_wf("teamwork");
+        let m = self.members().split_off(before);
+        let lead = m.iter().find(|x| x.2.team.as_ref().unwrap().lead).unwrap().0.clone();
+        let other = m.iter().find(|x| !x.2.team.as_ref().unwrap().lead).unwrap().0.clone();
+        (run, lead, other)
+    }
+}
+
+#[test]
+fn a_team_starts_together_talks_and_the_lead_finishes() {
+    let w = world();
+    let (run, lead, builder) = w.team_start();
+    let m = w.members();
+    assert_eq!(m.len(), 2, "both members start at once");
+    let lead_spec = &m.iter().find(|x| x.0 == lead).unwrap().2;
+    let builder_spec = &m.iter().find(|x| x.0 == builder).unwrap().2;
+    assert!(lead_spec.read_only && !builder_spec.read_only, "only the writer changes files");
+    assert_eq!(lead_spec.limits.unwrap().max_turns, 10);
+    assert!(lead_spec.colleagues.is_empty());
+    assert!(m.iter().find(|x| x.0 == lead).unwrap().1.contains("You lead the team"));
+
+    // The lead waits; the builder posts; the wait answers with the note
+    w.host(json!({"type": "board.wait", "requestId": "w1", "jobId": lead}));
+    assert!(w.board_reply("w1").is_none(), "nothing new yet: it waits");
+    w.host(json!({"type": "board.post", "requestId": "p1", "jobId": builder, "message": "Patch ready", "to": "planner"}));
+    assert!(w.board_reply("w1").unwrap().contains("builder in design (builder) → planner, that is you\nPatch ready"));
+    // Read already: a new wait doesn't get it again
+    w.host(json!({"type": "board.wait", "requestId": "w2", "jobId": lead}));
+    assert!(w.board_reply("w2").is_none());
+
+    // Only the lead finishes
+    w.host(json!({"type": "team.finish", "requestId": "f0", "jobId": builder, "summary": "mine"}));
+    assert!(w.board_reply("f0").unwrap().contains("only it finishes"));
+    w.host(json!({"type": "team.finish", "requestId": "f1", "jobId": lead, "summary": "Changed the parser; tests pass"}));
+    assert!(w.board_reply("f1").unwrap().contains("The step is done"));
+    assert!(w.stopped(&builder));
+    let view = w.run(&run.id);
+    let team = view.jobs.iter().find(|j| j.kind == "team").unwrap();
+    assert_eq!((team.state.as_str(), team.output.as_deref()), ("done", Some("Changed the parser; tests pass")));
+    // The next step has started, with the team's result as input
+    assert!(w.last_start().1.contains("## Input from earlier steps\n\nChanged the parser; tests pass"));
+    // The lead's session ending later changes nothing
+    w.end(&lead, "bye");
+    assert_eq!(w.run(&run.id).jobs.iter().find(|j| j.kind == "team").unwrap().state, "done");
+}
+
+#[test]
+fn a_lead_that_stops_early_is_sent_back_and_ending_last_finishes() {
+    let w = world();
+    let (run, lead, builder) = w.team_start();
+    w.host(json!({"type": "job.started", "jobId": lead, "sdkSessionId": "s-lead"}));
+    w.end(&lead, "I'm done thinking");
+    // The builder still works: the lead resumes, told to wait for it
+    let resumed = w.fake.sent.lock().unwrap().iter().any(|m| matches!(m, CoreMessage::JobResume { sdk_session_id, prompt, .. } if sdk_session_id == "s-lead" && prompt.contains("still working (builder)")));
+    assert!(resumed);
+    let lead2 = w.members().last().unwrap().0.clone();
+    w.host(json!({"type": "board.wait", "requestId": "w1", "jobId": lead2}));
+    // The builder ends its turn: the waiting lead hears of it
+    w.end(&builder, "patched");
+    assert!(w.board_reply("w1").unwrap().contains("builder ended its turn"));
+    // Now the lead is the last one working: ending its turn finishes the step with its words
+    w.end(&lead2, "Summary: patched and tested");
+    let team = w.run(&run.id).jobs.into_iter().find(|j| j.kind == "team").unwrap();
+    assert_eq!(team.output.as_deref(), Some("Summary: patched and tested"));
+}
+
+#[test]
+fn a_stop_rule_asks_whether_to_go_on_and_approving_resumes_the_members() {
+    let w = world();
+    let (run, lead, builder) = w.team_start();
+    w.host(json!({"type": "job.started", "jobId": lead, "sdkSessionId": "s-lead"}));
+    w.host(json!({"type": "job.started", "jobId": builder, "sdkSessionId": "s-builder"}));
+    // The lead was asking a person something when the builder hit its turn limit
+    w.host(json!({"type": "tool.ask", "askId": "a1", "jobId": lead, "toolName": "Read", "input": {}}));
+    w.host(json!({"type": "job.ended", "jobId": builder, "result": "error", "output": null, "costUsd": 0.3, "error": "error_max_turns"}));
+    assert!(w.stopped(&lead));
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "waiting");
+    assert_eq!(view.approvals.len(), 1, "the lead's tool ask expired; only the team's question is left");
+    assert!(view.approvals[0].summary.contains("builder reached its turn limit"));
+
+    w.engine.decide(&view.approvals[0].id, true, None, "Luc").unwrap();
+    let resumed: Vec<String> = w.fake.sent.lock().unwrap().iter().filter_map(|m| match m {
+        CoreMessage::JobResume { sdk_session_id, .. } => Some(sdk_session_id.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(resumed.len(), 2);
+    assert!(resumed.contains(&"s-lead".to_string()) && resumed.contains(&"s-builder".to_string()));
+    assert_eq!(w.run(&run.id).state, "running");
+}
+
+#[test]
+fn rejecting_the_stop_rule_fails_and_the_host_going_away_resumes_on_retry() {
+    let w = world();
+    let (run, _lead, builder) = w.team_start();
+    w.host(json!({"type": "job.ended", "jobId": builder, "result": "error", "output": null, "costUsd": 0.3, "error": "error_max_budget_usd"}));
+    let gate = w.run(&run.id).approvals[0].clone();
+    assert!(gate.summary.contains("budget"));
+    w.engine.decide(&gate.id, false, None, "Luc").unwrap();
+    assert_eq!(w.run(&run.id).state, "failed");
+
+    let (run, lead, builder) = w.team_start();
+    w.host(json!({"type": "job.started", "jobId": lead, "sdkSessionId": "s-l"}));
+    w.host(json!({"type": "job.started", "jobId": builder, "sdkSessionId": "s-b"}));
+    w.engine.on_host(HostEvent::Exited);
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "interrupted");
+    let team = view.jobs.iter().find(|j| j.kind == "team").unwrap();
+    assert_eq!(team.state, "interrupted");
+    w.engine.retry_job(&team.id).unwrap();
+    assert_eq!(w.run(&run.id).state, "running");
+    let resumed = w.fake.sent.lock().unwrap().iter().filter(|m| matches!(m, CoreMessage::JobResume { sdk_session_id, .. } if sdk_session_id == "s-l" || sdk_session_id == "s-b")).count();
+    assert_eq!(resumed, 2);
+}
+
+// ---- Live: a team with the real agent host ----
+
+struct HostSink(Arc<crate::host::Host>);
+
+impl Sink for HostSink {
+    fn send(&self, message: CoreMessage) -> bool {
+        self.0.send(message)
+    }
+    fn host_ready(&self) -> bool {
+        self.0.is_ready()
+    }
+    fn changed(&self) {}
+}
+
+/// Two Haiku agents in a team, through the real agent host and Claude Code: the lead has to get a word only
+/// the helper knows, over the board, and finish with it. Costs a few cents:
+/// `cargo test --lib live_team -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_team() {
+    let dir = tempfile::tempdir().unwrap();
+    let workflows = dir.path().join("workflows");
+    workflow::load_all(&workflows).unwrap();
+    std::fs::write(
+        workflows.join("pair.yaml"),
+        "name: Pair\nagents:\n  lead:\n    model: claude-haiku-5-5\n    ask: never\n    tools: [Read]\n  helper:\n    model: claude-haiku-5-5\n    ask: never\n    tools: [Read]\n    instructions: The secret word is TEAL. Tell it to whoever asks you for it on the board.\nsteps:\n- id: pair\n  team:\n    members: [lead, helper]\n    lead: lead\n    goal: The lead needs the secret word, which only the helper knows. Get it over the board, then finish with the word as the summary.\n    maxTurns: 15\n    budgetUsd: 0.3\n    minutes: 5\n",
+    )
+    .unwrap();
+    let host = crate::host::Host::new();
+    let engine = Arc::new(Engine::new(Db::open(&dir.path().join("s.sqlite")).unwrap(), Box::new(HostSink(host.clone())), workflows));
+    let handler = engine.clone();
+    host.set_handler(Arc::new(move |event| handler.on_host(event)));
+    let claude = crate::host::find_claude().expect("claude.exe");
+    host.clone().supervise(crate::host::dev_launch(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."), &claude));
+    let wait = |what: &str, done: &dyn Fn() -> bool, secs: u64| {
+        for _ in 0..secs * 2 {
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        panic!("timed out waiting for {what}");
+    };
+    wait("the agent host", &|| host.is_ready(), 60);
+
+    let run = engine
+        .start_run(StartRun {
+            workflow: "pair".into(),
+            ticket: TicketRef { key: "SIS-1".into(), title: "Live team".into(), url: "u".into() },
+            folder: dir.path().display().to_string(),
+            started_by: "test".into(),
+        })
+        .unwrap();
+    wait("the run to end", &|| !matches!(engine.run(&run.id).unwrap().state.as_str(), "running" | "waiting"), 300);
+    let view = engine.run(&run.id).unwrap();
+    for n in &view.notes {
+        println!("NOTE {} → {:?}: {}", n.author, n.to, n.body);
+    }
+    for j in &view.jobs {
+        println!("JOB {} {} {} {:?} {:?} ${:?}", j.kind, j.step_id, j.state, j.output.as_deref().map(|o| &o[..o.len().min(80)]), j.error, j.cost_usd);
+    }
+    host.shutdown();
+    assert_eq!(view.state, "passed");
+    let team = view.jobs.iter().find(|j| j.kind == "team").unwrap();
+    assert!(team.output.as_deref().unwrap_or_default().to_uppercase().contains("TEAL"));
+}

@@ -116,6 +116,15 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE jobs ADD COLUMN ask_request TEXT;
     CREATE INDEX jobs_by_parent ON jobs (parent_job);
     "#,
+    // 7: team steps. What each member has read of the board, and the members waiting for a note
+    r#"
+    ALTER TABLE jobs ADD COLUMN seen_note INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE board_waits (
+        request_id TEXT PRIMARY KEY,
+        job_id     TEXT NOT NULL,
+        run_id     TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.

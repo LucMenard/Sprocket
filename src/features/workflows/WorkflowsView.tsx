@@ -12,7 +12,7 @@ import { draftProblems, useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
-const PALETTE: StepKind[] = ['agent', 'condition', 'forEach', 'approval', 'action']
+const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'forEach', 'approval', 'action']
 
 /**
  * Save, off while there is nothing to save or the graph isn't complete. Hovering it (or focusing it) says what
@@ -276,7 +276,7 @@ export function WorkflowsView() {
                         : { parent: null, branch: null, index: node === '$trigger' ? 0 : draft.steps.length }
                       // An action is best done by an agent that has MCP servers
                       const agent = kind === 'action' ? (agents.find((a) => a.mcp.length) ?? agents[0]) : agents[0]
-                      const id = editing.addStep(kind, slot, agent?.id ?? null)
+                      const id = editing.addStep(kind, slot, agent?.id ?? null, agents.map((a) => a.id))
                       if (id) select(id)
                     }}
                   >
@@ -356,6 +356,31 @@ export function WorkflowsView() {
                   <span className="text-xs text-ct-text-3">
                     An agent asks another agent type a question with ask_agent; the answer comes back to it. None pressed: nobody can be asked.
                   </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="ct-label">Team limits</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        ['maxTurns', 'turns', 1],
+                        ['budgetUsd', '$ each', 0.1],
+                        ['minutes', 'minutes', 1],
+                      ] as const
+                    ).map(([key, label, step]) => (
+                      <label key={key} className="flex flex-col gap-1 text-xs text-ct-text-3">
+                        <input
+                          type="number"
+                          min={step}
+                          step={step}
+                          className="ct-input h-9"
+                          value={draft.teamLimits[key]}
+                          onChange={(e) => editing.setField('teamLimits', { ...draft.teamLimits, [key]: Math.max(step, Number(e.target.value) || step) })}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <span className="text-xs text-ct-text-3">The most a team step may use, for each member. A team step can ask for less.</span>
                 </div>
               </div>
             )}

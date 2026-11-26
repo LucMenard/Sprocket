@@ -50,7 +50,7 @@ export function AgentsView() {
   })
 
   const shown = current ?? currentLocal?.agent
-  const usedIn = shown ? workflows.filter((w) => allSteps(w.steps).some((s) => s.agent === shown.id) && w.agents.some((a) => a.id === shown.id && a.shared === shown.shared)) : []
+  const usedIn = shown ? workflows.filter((w) => allSteps(w.steps).some((s) => s.agent === shown.id || !!s.team?.members.includes(shown.id)) && w.agents.some((a) => a.id === shown.id && a.shared === shown.shared)) : []
   const working = shown
     ? runs.flatMap((run) =>
         usedIn.some((w) => w.id === run.workflowId)
@@ -190,7 +190,7 @@ export function AgentsView() {
                     <span className="flex-1 font-medium">{w.name}</span>
                     <span className="text-xs text-ct-text-3">
                       {allSteps(w.steps)
-                        .filter((s) => s.agent === shown.id)
+                        .filter((s) => s.agent === shown.id || !!s.team?.members.includes(shown.id))
                         .map((s) => s.id)
                         .join(', ')}
                     </span>

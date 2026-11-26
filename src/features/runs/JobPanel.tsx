@@ -59,6 +59,43 @@ export function RunEndsPanel({ run, which }: { run: Run; which: 'trigger' | 'end
   )
 }
 
+/** A team step's members: the latest session of each, its state and what it ended with. */
+function Members({ run, team }: { run: Run; team: Job }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const all = run.jobs.filter((j) => j.kind === 'member' && j.parentJob === team.id)
+  const latest = [...new Map(all.map((j) => [j.stepId, j])).values()]
+  const shown = latest.find((m) => m.id === open)
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-semibold">Members</span>
+      <ul className="flex flex-col gap-1.5">
+        {latest.map((m) => (
+          <li key={m.id} className="flex flex-col gap-1 rounded-lg border border-ct-border p-2.5 text-[13px]">
+            <span className="flex items-center gap-2">
+              <StateDot state={m.state} size={10} />
+              <strong className="font-semibold">{m.stepId.split('~')[1]}</strong>
+              <span className="text-xs text-ct-text-3">
+                {stateLabel(m.state)}
+                {m.attempt > 1 ? ` · session ${m.attempt}` : ''}
+              </span>
+              <button type="button" className="ml-auto text-xs underline underline-offset-2" onClick={() => setOpen(m.id)}>
+                Session
+              </button>
+            </span>
+            {m.error && <p className="text-xs" style={{ color: 'var(--ct-pill-fail)' }}>{m.error}</p>}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-ct-text-3">They talk on the board: open it with Board, above.</p>
+      {shown && (
+        <Dialog title={`${shown.stepId.split('~')[1]} · ${team.stepId}`} onClose={() => setOpen(null)}>
+          <Transcript jobId={shown.id} live={shown.state === 'running' || shown.state === 'waiting'} />
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
 /** What a job asked other agent types: the question, who, and the answer (or how far it got). */
 function Asks({ run, parent }: { run: Run; parent: Job }) {
   const [open, setOpen] = useState<string | null>(null)
@@ -174,7 +211,7 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
             rows={[
               ['Status', `${stateLabel(job.state)}${job.superseded ? ' (redone since)' : ''}`, true],
               ...(scope ? ([['Item', scopeLabel(scope)]] as [string, string][]) : []),
-              ['Run by', runsAgent ? step.agent : step.kind === 'approval' ? 'You' : 'Sprocket'],
+              ['Run by', runsAgent ? step.agent : step.kind === 'approval' ? 'You' : step.kind === 'team' ? (step.team?.members.join(', ') ?? 'the team') : 'Sprocket'],
               ['Duration', duration(job.startedAt, job.endedAt) || '–'],
               ['Attempt', `${job.attempt} of ${attempts.length}`],
               ...(job.costUsd ? ([['Cost', usd(job.costUsd)]] as [string, string][]) : []),
@@ -192,6 +229,7 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
           )}
 
           <Asks run={run} parent={job} />
+          {job.kind === 'team' && <Members run={run} team={job} />}
 
           {approvals.map((a) => (
             <ApprovalCard key={a.id} approval={a} run={run} />
