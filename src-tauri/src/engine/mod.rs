@@ -82,7 +82,15 @@ impl Engine {
     }
 
     fn change_and<T>(&self, notify: bool, f: impl FnOnce(&Connection, &mut Out) -> Result<T>) -> Result<T> {
-        let mut out = Out { ready: self.sink.host_ready(), messages: Vec::new() };
+        let (value, prepare) = self.apply(notify, f)?;
+        self.prepare_worktrees(prepare);
+        Ok(value)
+    }
+
+    /// The change itself: the transaction, then the host's messages and the UI.
+    fn apply<T>(&self, notify: bool, f: impl FnOnce(&Connection, &mut Out) -> Result<T>) -> Result<(T, Vec<steps::Prepare>)> {
+        let mut out =
+            Out { ready: self.sink.host_ready(), messages: Vec::new(), workflows_dir: self.workflows_dir.clone(), prepare: Vec::new() };
         let value = {
             let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
             let tx = conn.unchecked_transaction()?;
@@ -96,7 +104,20 @@ impl Engine {
         if notify {
             self.sink.changed();
         }
-        Ok(value)
+        Ok((value, out.prepare))
+    }
+
+    /// Worktrees for launch steps on another ticket: git runs here, outside the transaction, then each step goes on
+    /// (which may ask for more).
+    fn prepare_worktrees(&self, mut queue: Vec<steps::Prepare>) {
+        while !queue.is_empty() {
+            let p = queue.remove(0);
+            let folder = crate::worktree::ticket_worktree(std::path::Path::new(&p.from), &p.key);
+            match self.apply(true, |conn, out| steps::prepared(conn, &p.job_id, folder, out)) {
+                Ok(((), more)) => queue.extend(more),
+                Err(e) => log::warn!("engine: launching on {}: {}", p.key, e.message),
+            }
+        }
     }
 
     /// Starts a workflow on a ticket. `req.folder` comes from the local API and becomes the agents' working
@@ -117,34 +138,20 @@ impl Engine {
             return Err(AppError::new("invalid", format!("{} runs what you ask: say what you want done", wf.name)));
         }
         let run_id = self.change(|conn, out| {
-            let active: u32 = conn.query_row(
-                "SELECT count(*) FROM runs WHERE workflow_id = ?1 AND state IN ('running', 'waiting')",
-                [&wf.id],
-                |r| r.get(0),
+            let id = steps::create_run(
+                conn,
+                steps::NewRun {
+                    wf: &wf,
+                    ticket_key: &req.ticket.key,
+                    ticket_title: &req.ticket.title,
+                    ticket_url: &req.ticket.url,
+                    folder: &folder,
+                    started_by: &req.started_by,
+                    request: request.as_deref(),
+                    parent_job: None,
+                    root_run: None,
+                },
             )?;
-            if active >= wf.max_parallel_runs {
-                return Err(AppError::new(
-                    "busy",
-                    format!("{} already has {active} run(s) going, its limit", wf.name),
-                ));
-            }
-            let number: i64 = conn.query_row(
-                "SELECT coalesce(max(number), 0) + 1 FROM runs WHERE workflow_id = ?1",
-                [&wf.id],
-                |r| r.get(0),
-            )?;
-            let id = steps::new_id();
-            let snapshot = serde_json::to_string(&wf).expect("serializable");
-            conn.execute(
-                &format!(
-                    "INSERT INTO runs (id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title,
-                     ticket_url, folder, started_by, state, started_at, request)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11)"
-                ),
-                params![id, wf.id, wf.name, snapshot, number, req.ticket.key, req.ticket.title, req.ticket.url,
-                    folder, req.started_by, request],
-            )?;
-            steps::activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, req.started_by))?;
             steps::drive(conn, &id, out)?;
             Ok(id)
         })?;
@@ -222,18 +229,10 @@ impl Engine {
             if !steps::is_active(&run.state) && !matches!(run.state.as_str(), "interrupted" | "failed") {
                 return Err(AppError::new("conflict", format!("The run is already {}", run.state)));
             }
-            let mut stmt = conn.prepare("SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask', 'member') AND state IN ('running', 'waiting')")?;
-            let running: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            for job_id in running {
-                out.messages.push(CoreMessage::JobStop { job_id });
-            }
-            conn.execute(
-                &format!("UPDATE jobs SET state = 'stopped', ended_at = {NOW} WHERE run_id = ?1 AND state IN ('running', 'waiting')"),
-                [run_id],
-            )?;
-            steps::expire_approvals(conn, run_id, None, true)?;
-            steps::activity(conn, run_id, None, "run.cancelled", by)?;
-            steps::set_run_state(conn, run_id, "cancelled")
+            // The runs its launch steps started stop with it
+            steps::cancel(conn, run_id, by, out)?;
+            // Their workflows have room again
+            steps::wake_queued(conn, out)
         })
     }
 

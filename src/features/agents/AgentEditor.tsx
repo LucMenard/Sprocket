@@ -51,6 +51,37 @@ function Toggles({ label, options, value, onChange, mono }: { label: string; opt
   )
 }
 
+/** A server not listed yet (no agent with it has run), added by its name in Claude Code (`claude mcp list`). */
+function AddServer({ taken, onAdd }: { taken: string[]; onAdd: (name: string) => void }) {
+  const [name, setName] = useState('')
+  const trimmed = name.trim()
+  const add = () => {
+    if (!trimmed || taken.includes(trimmed)) return
+    onAdd(trimmed)
+    setName('')
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <input
+        className="ct-input ct-mono w-56"
+        aria-label="MCP server name"
+        placeholder="Server name, as in claude mcp list"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            add()
+          }
+        }}
+      />
+      <button type="button" className="ct-btn" disabled={!trimmed || taken.includes(trimmed)} onClick={add}>
+        Add server
+      </button>
+    </div>
+  )
+}
+
 const draftOf = (a: AgentType): AgentDraft => ({
   description: a.description ?? '',
   model: a.model,
@@ -130,9 +161,10 @@ export function AgentEditor({ agent, mcpServers, usedBy, onDeleted }: { agent: A
         <div className="flex flex-col gap-2">
           <span className="ct-label">MCP servers it can use</span>
           <Toggles label="MCP servers it can use" options={mcpServers} value={draft.mcp} onChange={(v) => set('mcp', v)} />
+          <AddServer taken={[...mcpServers, ...draft.mcp]} onAdd={(name) => set('mcp', [...draft.mcp, name])} />
           <span className="text-xs text-ct-text-3">
             {draft.mcp.length ? 'Only these; the others are refused.' : 'None: no MCP tool is even loaded, which saves context.'}
-            {mcpServers.length === 0 && ' Your servers are listed here once an agent has run.'}
+            {mcpServers.length === 0 && ' Your servers are listed here once an agent with one has run; until then, add one by its name.'}
           </span>
         </div>
         <div className="flex flex-col gap-2">

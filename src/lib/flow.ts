@@ -1,7 +1,7 @@
 import type { JobState, Point, RunState, WorkflowStep } from './api'
 import { allSteps } from './steps'
 
-export type FlowKind = 'trigger' | 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'end'
+export type FlowKind = 'trigger' | 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch' | 'end'
 
 export interface FlowNode {
   id: string
@@ -82,6 +82,7 @@ export const KINDS: Record<FlowKind, { label: string; icon: string; help: string
   approval: { label: 'Human approval', icon: 'M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6zM9 12l2 2 4-4', help: 'Pause until someone approves' },
   action: { label: 'Action', icon: 'M4 5h16v11H9l-5 4zM8 10h8M8 13h5', help: 'Post, comment or update a ticket' },
   team: { label: 'Team', icon: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20a6 6 0 0 1 12 0M17 11a3 3 0 1 0 0-6M21 20a6 6 0 0 0-4-5.7', help: 'Agents working on one step together' },
+  launch: { label: 'Launch a workflow', icon: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', help: 'Run another workflow on the ticket and wait for it' },
   parallel: { label: 'Parallel branches', icon: 'M6 3v18M6 8c0 4 12 3 12 8v5', help: 'Steps that run at the same time' },
   end: { label: 'End', icon: 'M5 21V4M5 4h11l-2 4 2 4H5', help: 'Finish the run' },
 }
@@ -254,5 +255,7 @@ export function designSub(s: WorkflowStep): string {
       return `${s.branches.length} branches at once`
     case 'team':
       return `${s.team?.members.join(', ') ?? ''} · lead ${s.team?.lead ?? ''}`
+    case 'launch':
+      return `Runs ${s.launch ?? '(no workflow)'}${s.ticket ? ` on ${s.ticket}` : ''} and waits`
   }
 }

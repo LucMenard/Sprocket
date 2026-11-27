@@ -1,0 +1,50 @@
+name: Build a feature
+description: Design it, get your approval, build it with a draft PR, review it for bugs and security, and fix what blocks.
+offerInTracket: true
+maxParallelRuns: 2
+steps:
+- id: design
+  agent: architect
+  instructions: Read the ticket and the code it concerns, then write the design of the feature. Do not change any file.
+- id: approve
+  approval:
+    summary: steps.design.output
+  onReject: design
+- id: build
+  agent: builder
+  input: steps.design.output
+  instructions: Implement the design, add tests for it, run the tests, push a branch named after the ticket and open a draft PR. Give the PR's link.
+- id: review
+  branches:
+  - - id: code_review
+      agent: code-reviewer
+      input: steps.build.output
+      instructions: Review the branch's changes against the main branch.
+      output: { blocking: number, findings: text }
+  - - id: security_review
+      agent: security-reviewer
+      input: steps.build.output
+      instructions: Review the branch's changes against the main branch.
+      output: { blocking: number, findings: text }
+- id: blocked
+  if: steps.code_review.output.blocking > 0 or steps.security_review.output.blocking > 0
+  then:
+  - id: fix
+    agent: fixer
+    input: |
+      Code review: {{ steps.code_review.output.findings }}
+
+      Security review: {{ steps.security_review.output.findings }}
+    instructions: Fix the blocking findings of these reviews, run the tests, and push the fix to the PR's branch.
+- id: report
+  agent: notifier
+  action:
+    do: comment
+    text: |
+      {{ steps.build.output }}
+
+      Code review: {{ steps.code_review.output.findings }}
+
+      Security review: {{ steps.security_review.output.findings }}
+
+      Fixes: {{ steps.fix.output }}

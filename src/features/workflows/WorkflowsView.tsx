@@ -12,7 +12,7 @@ import { draftProblems, useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
-const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'forEach', 'approval', 'action']
+const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'forEach', 'approval', 'action', 'launch']
 
 /**
  * Save, off while there is nothing to save or the graph isn't complete. Hovering it (or focusing it) says what
@@ -431,6 +431,7 @@ export function WorkflowsView() {
                 editing={editing}
                 node={node}
                 agents={agents}
+                launchable={workflows.filter((w) => w.id !== saved?.id).map((w) => ({ id: w.id, name: w.name, forRequests: w.forRequests }))}
                 flow={flow}
                 link={selectedEdge}
                 onSelect={select}

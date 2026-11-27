@@ -102,6 +102,8 @@ export function emptyStep(id: string, kind: StepKind): WorkflowStep {
     steps: [],
     branches: [],
     team: null,
+    launch: null,
+    ticket: null,
   }
 }
 
@@ -119,7 +121,7 @@ export function currentJobs(run: Run, stepId: string): Job[] {
   return run.jobs.filter((j) => j.stepId === stepId && !j.superseded)
 }
 
-const BY_URGENCY: JobState[] = ['waiting', 'running', 'failed', 'interrupted', 'rejected', 'stopped', 'done']
+const BY_URGENCY: JobState[] = ['waiting', 'running', 'preparing', 'queued', 'failed', 'interrupted', 'rejected', 'stopped', 'done']
 
 /** A step's state in a run: of its job, or, for a step done once per loop item, the most urgent of theirs. */
 export function stepState(run: Run, stepId: string): JobState | 'pending' {

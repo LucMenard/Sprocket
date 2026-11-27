@@ -129,6 +129,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE runs ADD COLUMN request TEXT;
     "#,
+    // 9: a run launched by another run's step: that step's job, and the run at the top of the chain
+    r#"
+    ALTER TABLE runs ADD COLUMN parent_job TEXT;
+    ALTER TABLE runs ADD COLUMN root_run TEXT;
+    CREATE INDEX runs_parent_job ON runs(parent_job);
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.

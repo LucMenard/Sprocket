@@ -75,6 +75,11 @@ export function RunFacts({ run }: { run: Run }) {
           <span className="text-ct-text-3">{label}</span> {value}
         </span>
       ))}
+      {run.parentRun && (
+        <button type="button" className="ct-btn ml-auto" onClick={() => useRunSelection.getState().select(run.parentRun)}>
+          Open the run that launched it
+        </button>
+      )}
     </div>
   )
 }

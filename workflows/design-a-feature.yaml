@@ -1,0 +1,20 @@
+name: Design a feature
+description: The architect, UI designer and researcher design the feature together, you approve it, and it goes on the ticket.
+offerInTracket: true
+maxParallelRuns: 2
+teamLimits: { maxTurns: 30, budgetUsd: 5, minutes: 45 }
+steps:
+- id: design
+  team:
+    members: [architect, ui-designer, researcher]
+    lead: architect
+    goal: Read the ticket and the code it concerns, and agree on a design for the feature, its screens and the facts it relies on. Nobody changes files. Finish with the design.
+- id: approve
+  approval:
+    summary: steps.design.output
+  onReject: design
+- id: report
+  agent: notifier
+  action:
+    do: comment
+    text: "{{ steps.design.output }}"

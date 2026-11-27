@@ -7,6 +7,8 @@
 //! superseded. Every function works inside the caller's transaction and queues host messages in `Out`,
 //! which are sent only once the transaction has committed.
 
+use std::path::PathBuf;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
@@ -19,6 +21,10 @@ use crate::workflow::{as_template, ActionKind, ItemFailure, Step, StepKind, Work
 pub struct Out {
     pub ready: bool,
     pub messages: Vec<CoreMessage>,
+    /// Where a launch step finds the workflow it starts
+    pub workflows_dir: PathBuf,
+    /// Worktrees to make once the change is saved, for launch steps on another ticket
+    pub prepare: Vec<Prepare>,
 }
 
 pub struct RunRow {
@@ -436,6 +442,9 @@ fn start_step(conn: &Connection, run: &RunRow, step: &Step, scope: &str, feedbac
     if step.kind == StepKind::Team {
         return super::team::start(conn, run, step, scope, feedback, out);
     }
+    if step.kind == StepKind::Launch {
+        return launch(conn, run, step, scope, None, out);
+    }
     if step.kind == StepKind::Approval {
         let job_id = insert_job(conn, &run.id, scope, &step.id, "approval", "waiting")?;
         let summary = step
@@ -492,7 +501,8 @@ pub enum Status {
 fn status_of(state: &str) -> Status {
     match state {
         "done" => Status::Done,
-        "running" | "waiting" => Status::Busy,
+        // A launch step waits for its ticket's worktree, or for its workflow to have room
+        "running" | "waiting" | "preparing" | "queued" => Status::Busy,
         "interrupted" => Status::Interrupted,
         _ => Status::Failed,
     }
@@ -511,6 +521,11 @@ fn block(conn: &Connection, run: &RunRow, steps: &[Step], scope: &str, out: &mut
 fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out) -> Result<Status> {
     let job = current(conn, &run.id, scope, &step.id)?;
     match step.kind {
+        StepKind::Launch => match job {
+            None => launch(conn, run, step, scope, None, out),
+            Some(j) if j.state == "queued" => launch(conn, run, step, scope, Some(&j), out),
+            Some(j) => Ok(status_of(&j.state)),
+        },
         StepKind::Agent | StepKind::Action | StepKind::Approval | StepKind::Team => match job {
             None => start_step(conn, run, step, scope, None, None, out),
             Some(j) => Ok(status_of(&j.state)),
@@ -640,8 +655,14 @@ fn for_each(conn: &Connection, run: &RunRow, step: &Step, scope: &str, job: Opti
     Ok(Status::Done)
 }
 
-/// Moves the run on as far as it can go, and sets its state from where it got.
+/// Moves the run on as far as it can go, and sets its state from where it got. A run launched by another
+/// run's step that ends here ends that step, and its run moves on in turn.
 pub fn drive(conn: &Connection, run_id: &str, out: &mut Out) -> Result<()> {
+    drive_run(conn, run_id, out, true)
+}
+
+/// `up` false: the run that launched this one is being driven right now, and settles its step itself.
+fn drive_run(conn: &Connection, run_id: &str, out: &mut Out, up: bool) -> Result<()> {
     let run = load_run(conn, run_id)?;
     if !is_active(&run.state) {
         return Ok(());
@@ -649,15 +670,401 @@ pub fn drive(conn: &Connection, run_id: &str, out: &mut Out) -> Result<()> {
     match block(conn, &run, &run.wf.steps, "", out)? {
         Status::Done => {
             activity(conn, &run.id, None, "run.passed", "")?;
-            set_run_state(conn, &run.id, "passed")
+            set_run_state(conn, &run.id, "passed")?;
         }
-        Status::Failed => set_run_state(conn, &run.id, "failed"),
+        Status::Failed => set_run_state(conn, &run.id, "failed")?,
         Status::Interrupted => {
             expire_approvals(conn, &run.id, None, false)?;
-            set_run_state(conn, &run.id, "interrupted")
+            set_run_state(conn, &run.id, "interrupted")?;
         }
-        Status::Busy => refresh_waiting(conn, &run.id),
+        Status::Busy => return refresh_waiting(conn, &run.id),
     }
+    if up {
+        to_parent(conn, run_id, out)?;
+        wake_queued(conn, out)?;
+    }
+    Ok(())
+}
+
+// ---- Launching another workflow ----
+
+/// What a new run is, from the local API or from a launch step.
+pub struct NewRun<'a> {
+    pub wf: &'a Workflow,
+    pub ticket_key: &'a str,
+    pub ticket_title: &'a str,
+    pub ticket_url: &'a str,
+    /// Already resolved (see `worktree_folder`)
+    pub folder: &'a str,
+    pub started_by: &'a str,
+    pub request: Option<&'a str>,
+    /// The launch step's job, for a run launched by another run
+    pub parent_job: Option<&'a str>,
+    /// The run at the top of that chain
+    pub root_run: Option<&'a str>,
+}
+
+/// Writes a new run, within its workflow's limit of runs at once. It isn't driven yet.
+pub fn create_run(conn: &Connection, n: NewRun) -> Result<String> {
+    let wf = n.wf;
+    let active: u32 = conn.query_row(
+        "SELECT count(*) FROM runs WHERE workflow_id = ?1 AND state IN ('running', 'waiting')",
+        [&wf.id],
+        |r| r.get(0),
+    )?;
+    if active >= wf.max_parallel_runs {
+        return Err(AppError::new("busy", format!("{} already has {active} run(s) going, its limit", wf.name)));
+    }
+    let number: i64 =
+        conn.query_row("SELECT coalesce(max(number), 0) + 1 FROM runs WHERE workflow_id = ?1", [&wf.id], |r| r.get(0))?;
+    let id = new_id();
+    let snapshot = serde_json::to_string(wf).expect("serializable");
+    conn.execute(
+        &format!(
+            "INSERT INTO runs (id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title,
+             ticket_url, folder, started_by, state, started_at, request, parent_job, root_run)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11, ?12, ?13)"
+        ),
+        params![
+            id,
+            wf.id,
+            wf.name,
+            snapshot,
+            number,
+            n.ticket_key,
+            n.ticket_title,
+            n.ticket_url,
+            n.folder,
+            n.started_by,
+            n.request,
+            n.parent_job,
+            n.root_run
+        ],
+    )?;
+    activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, n.started_by))?;
+    Ok(id)
+}
+
+/// The launch step's job that started this run, and that job's run.
+fn parent_of(conn: &Connection, run_id: &str) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT j.id, j.run_id FROM runs r JOIN jobs j ON j.id = r.parent_job WHERE r.id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// The workflows of this run and of the runs that launched it, up the chain.
+fn chain(conn: &Connection, run_id: &str) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    let mut at = Some(run_id.to_string());
+    while let Some(run) = at.take() {
+        ids.push(conn.query_row("SELECT workflow_id FROM runs WHERE id = ?1", [&run], |r| r.get(0))?);
+        // A workflow is in a chain once, so it is short; the cap only guards against a broken database
+        at = parent_of(conn, &run)?.map(|(_, parent_run)| parent_run).filter(|_| ids.len() < 50);
+    }
+    Ok(ids)
+}
+
+/// The ticket a launch step's run works on: the step's `ticket` (`SIS-301`, or `SIS-301 Its title`), else the run's.
+struct Target {
+    key: String,
+    title: String,
+    url: String,
+}
+
+fn target_ticket(conn: &Connection, run: &RunRow, step: &Step, scope: &str) -> std::result::Result<Target, String> {
+    let own = || Target { key: run.ticket_key.clone(), title: run.ticket_title.clone(), url: run.ticket_url.clone() };
+    let Some(template) = step.ticket.as_deref() else { return Ok(own()) };
+    let text = render(conn, run, scope, template);
+    let text = text.trim();
+    let (key, title) = match text.split_once(char::is_whitespace) {
+        Some((key, title)) => (key, title.trim()),
+        None => (text, ""),
+    };
+    let key = key.trim_end_matches(':');
+    if !super::valid_issue_key(key) {
+        return Err(format!("The ticket \"{text}\" doesn't start with a key like ABC-123"));
+    }
+    if key == run.ticket_key {
+        return Ok(own());
+    }
+    Ok(Target {
+        key: key.to_string(),
+        title: if title.is_empty() { key.to_string() } else { title.to_string() },
+        // The same Jira, another issue
+        url: if run.ticket_url.contains(&run.ticket_key) { run.ticket_url.replace(&run.ticket_key, key) } else { String::new() },
+    })
+}
+
+/// A launch step's run: started, or the workflow is at its limit of runs at once.
+enum Child {
+    Started(String),
+    Full(String),
+}
+
+/// Starts the step's workflow on `ticket`, in `folder`; the step's input, when given, is what that run is asked.
+#[allow(clippy::too_many_arguments)]
+fn start_child(
+    conn: &Connection,
+    run: &RunRow,
+    step: &Step,
+    scope: &str,
+    job_id: &str,
+    ticket: &Target,
+    folder: &str,
+    out: &Out,
+) -> std::result::Result<Child, String> {
+    let target = step.launch.as_deref().unwrap_or_default();
+    let list = crate::workflow::load_all(&out.workflows_dir).map_err(|e| format!("The workflows can't be read: {e}"))?;
+    let Some(wf) = list.workflows.into_iter().find(|w| w.id == target) else {
+        return Err(format!("There is no workflow `{target}`, or its file has a problem"));
+    };
+    if chain(conn, &run.id).map_err(|e| e.message)?.contains(&wf.id) {
+        return Err(format!("{} is already running further up this chain: it would launch itself", wf.name));
+    }
+    let request = step
+        .input
+        .as_deref()
+        .map(|t| render(conn, run, scope, t))
+        .or_else(|| run.request.clone())
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+    if wf.for_requests && request.is_none() {
+        return Err(format!("{} runs what it is asked: give the step an input", wf.name));
+    }
+    // On the same ticket it is part of this run's chain (one row in Tracket); on another, the top of its own
+    let root: Option<String> = if ticket.key == run.ticket_key {
+        Some(
+            conn.query_row("SELECT coalesce(root_run, id) FROM runs WHERE id = ?1", [&run.id], |r| r.get(0))
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+    let by = format!("{} #{}", run.wf.name, run.number);
+    let created = create_run(
+        conn,
+        NewRun {
+            wf: &wf,
+            ticket_key: &ticket.key,
+            ticket_title: &ticket.title,
+            ticket_url: &ticket.url,
+            folder,
+            started_by: &by,
+            request: request.as_deref(),
+            parent_job: Some(job_id),
+            root_run: root.as_deref(),
+        },
+    );
+    match created {
+        Ok(child) => Ok(Child::Started(child)),
+        Err(e) if e.kind == "busy" => Ok(Child::Full(e.message)),
+        Err(e) => Err(e.message),
+    }
+}
+
+fn fail_job(conn: &Connection, run_id: &str, job_id: &str, why: &str) -> Result<Status> {
+    end_job(conn, job_id, Ended { error: Some(why), ..Ended::new("failed") })?;
+    activity(conn, run_id, Some(job_id), "job.failed", why)?;
+    Ok(Status::Failed)
+}
+
+/// A launch step: its run starts, and the step waits for it. On another ticket, that ticket's worktree is made first,
+/// after this change is saved (`Out::prepare`, then `prepared`). At its workflow's limit of runs, the step waits
+/// (`queued`) and tries again when a run ends. `queued`: the step's job, waiting for a place.
+fn launch(conn: &Connection, run: &RunRow, step: &Step, scope: &str, queued: Option<&Job>, out: &mut Out) -> Result<Status> {
+    let job_id = match queued {
+        Some(j) => j.id.clone(),
+        None => insert_job(conn, &run.id, scope, &step.id, "launch", "running")?,
+    };
+    let ticket = match target_ticket(conn, run, step, scope) {
+        Ok(t) => t,
+        Err(why) => return fail_job(conn, &run.id, &job_id, &why),
+    };
+    if ticket.key != run.ticket_key {
+        // Git can take a while: not while the database is held
+        conn.execute("UPDATE jobs SET state = 'preparing' WHERE id = ?1", [&job_id])?;
+        activity(conn, &run.id, Some(&job_id), "launch.preparing", &format!("{}: {}", label(&step.id, scope), ticket.key))?;
+        out.prepare.push(Prepare { job_id, from: run.folder.clone(), key: ticket.key });
+        return Ok(Status::Busy);
+    }
+    start_in(conn, run, step, scope, &job_id, &ticket, &run.folder.clone(), out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_in(conn: &Connection, run: &RunRow, step: &Step, scope: &str, job_id: &str, ticket: &Target, folder: &str, out: &mut Out) -> Result<Status> {
+    match start_child(conn, run, step, scope, job_id, ticket, folder, out) {
+        Ok(Child::Started(child)) => {
+            conn.execute("UPDATE jobs SET state = 'running' WHERE id = ?1", [job_id])?;
+            let (name, number): (String, i64) =
+                conn.query_row("SELECT workflow_name, number FROM runs WHERE id = ?1", [&child], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let on = if ticket.key == run.ticket_key { String::new() } else { format!(" on {}", ticket.key) };
+            activity(conn, &run.id, Some(job_id), "launch.started", &format!("{}: {name} #{number}{on}", label(&step.id, scope)))?;
+            // It may end at once (only conditions, or the agent host is away): this run is being driven, so the
+            // step is settled here rather than from the launched run
+            drive_run(conn, &child, out, false)?;
+            settle(conn, job_id, &child)
+        }
+        Ok(Child::Full(why)) => {
+            let was: String = conn.query_row("SELECT state FROM jobs WHERE id = ?1", [job_id], |r| r.get(0))?;
+            if was != "queued" {
+                conn.execute("UPDATE jobs SET state = 'queued' WHERE id = ?1", [job_id])?;
+                activity(conn, &run.id, Some(job_id), "launch.queued", &why)?;
+            }
+            Ok(Status::Busy)
+        }
+        Err(why) => fail_job(conn, &run.id, job_id, &why),
+    }
+}
+
+/// A ticket's worktree to make for a launch step, once the change that asked for it is saved.
+pub struct Prepare {
+    pub job_id: String,
+    /// The launching run's folder: the new worktree is in the same repository
+    pub from: String,
+    pub key: String,
+}
+
+/// The worktree for a launch step's ticket is ready (or couldn't be made): its run starts there.
+pub fn prepared(conn: &Connection, job_id: &str, folder: std::result::Result<String, String>, out: &mut Out) -> Result<()> {
+    // Cancelled, or redone, meanwhile
+    let Some(j) = job(conn, job_id)?.filter(|j| j.state == "preparing" && !j.superseded) else { return Ok(()) };
+    let run = load_run(conn, &j.run_id)?;
+    if !is_active(&run.state) {
+        return Ok(());
+    }
+    let Some(place) = run.wf.find(&j.step_id) else { return Ok(()) };
+    match folder.and_then(|folder| target_ticket(conn, &run, place.step, &j.scope).map(|t| (folder, t))) {
+        Ok((folder, ticket)) => {
+            start_in(conn, &run, place.step, &j.scope, job_id, &ticket, &folder, out)?;
+        }
+        Err(why) => {
+            fail_job(conn, &run.id, job_id, &format!("The ticket's worktree: {why}"))?;
+        }
+    }
+    drive(conn, &run.id, out)
+}
+
+/// A run ended, so a workflow may have room again: the launch steps waiting for one try again.
+pub fn wake_queued(conn: &Connection, out: &mut Out) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT DISTINCT run_id FROM jobs WHERE kind = 'launch' AND state = 'queued' AND superseded = 0")?;
+    let runs: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for run_id in runs {
+        drive(conn, &run_id, out)?;
+    }
+    Ok(())
+}
+
+/// What a run gives the step that launched it: what its last step gave, as text.
+fn run_result(conn: &Connection, run_id: &str) -> Result<String> {
+    let run = load_run(conn, run_id)?;
+    for step in run.wf.steps.iter().rev().filter(|s| s.kind != StepKind::Condition) {
+        if let Some(j) = current(conn, run_id, "", &step.id)? {
+            return Ok(expr::to_text(&value_of(&j)));
+        }
+    }
+    Ok(String::new())
+}
+
+/// Ends the launch step from the state of its run, once that run has ended.
+fn settle(conn: &Connection, job_id: &str, child: &str) -> Result<Status> {
+    let Some(j) = job(conn, job_id)? else { return Ok(Status::Failed) };
+    if !is_active(&j.state) {
+        return Ok(status_of(&j.state));
+    }
+    let (state, name, number): (String, String, i64) =
+        conn.query_row("SELECT state, workflow_name, number FROM runs WHERE id = ?1", [child], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let which = format!("{name} #{number}");
+    match state.as_str() {
+        "running" | "waiting" => Ok(Status::Busy),
+        "passed" => {
+            let result = run_result(conn, child)?;
+            end_job(conn, job_id, Ended { output: Some(&result), ..Ended::new("done") })?;
+            activity(conn, &j.run_id, Some(job_id), "job.done", &label(&j.step_id, &j.scope))?;
+            Ok(Status::Done)
+        }
+        "interrupted" => {
+            let why = format!("{which} was interrupted");
+            end_job(conn, job_id, Ended { error: Some(&why), ..Ended::new("interrupted") })?;
+            activity(conn, &j.run_id, Some(job_id), "job.interrupted", &why)?;
+            Ok(Status::Interrupted)
+        }
+        other => {
+            let why = if other == "cancelled" { format!("{which} was cancelled") } else { format!("{which} failed") };
+            end_job(conn, job_id, Ended { error: Some(&why), ..Ended::new("failed") })?;
+            activity(conn, &j.run_id, Some(job_id), "job.failed", &why)?;
+            Ok(Status::Failed)
+        }
+    }
+}
+
+/// A launched run has ended: the step that launched it ends too, and its run moves on.
+pub fn to_parent(conn: &Connection, run_id: &str, out: &mut Out) -> Result<()> {
+    let Some((job_id, parent_run)) = parent_of(conn, run_id)? else { return Ok(()) };
+    if job(conn, &job_id)?.is_none_or(|j| !is_active(&j.state)) {
+        return Ok(());
+    }
+    if settle(conn, &job_id, run_id)? == Status::Busy {
+        return Ok(());
+    }
+    drive(conn, &parent_run, out)
+}
+
+/// A launched run goes on again (it, or a step of it, was retried): the steps that launched it, and their runs,
+/// are running again, up the chain.
+fn reopen_parent(conn: &Connection, run_id: &str) -> Result<()> {
+    let mut at = run_id.to_string();
+    while let Some((job_id, parent_run)) = parent_of(conn, &at)? {
+        let reopened = conn.execute(
+            "UPDATE jobs SET state = 'running', error = NULL, ended_at = NULL
+             WHERE id = ?1 AND superseded = 0 AND state IN ('failed', 'interrupted')",
+            [&job_id],
+        )?;
+        if reopened == 0 {
+            break;
+        }
+        let step: (String, String) = conn.query_row("SELECT step_id, scope FROM jobs WHERE id = ?1", [&job_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        activity(conn, &parent_run, Some(&job_id), "job.retried", &label(&step.0, &step.1))?;
+        let state: String = conn.query_row("SELECT state FROM runs WHERE id = ?1", [&parent_run], |r| r.get(0))?;
+        if matches!(state.as_str(), "failed" | "interrupted") {
+            set_run_state(conn, &parent_run, "running")?;
+        }
+        at = parent_run;
+    }
+    Ok(())
+}
+
+/// Stops a run, and the runs its launch steps started.
+pub fn cancel(conn: &Connection, run_id: &str, by: &str, out: &mut Out) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM jobs WHERE run_id = ?1 AND kind IN ('agent', 'action', 'ask', 'member') AND state IN ('running', 'waiting')",
+    )?;
+    let running: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for job_id in running {
+        out.messages.push(CoreMessage::JobStop { job_id });
+    }
+    conn.execute(
+        &format!(
+            "UPDATE jobs SET state = 'stopped', ended_at = {NOW} WHERE run_id = ?1 AND state IN ('running', 'waiting', 'queued', 'preparing')"
+        ),
+        [run_id],
+    )?;
+    expire_approvals(conn, run_id, None, true)?;
+    activity(conn, run_id, None, "run.cancelled", by)?;
+    set_run_state(conn, run_id, "cancelled")?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id FROM runs r JOIN jobs j ON j.id = r.parent_job
+         WHERE j.run_id = ?1 AND r.state IN ('running', 'waiting', 'interrupted')",
+    )?;
+    let launched: Vec<String> = stmt.query_map([run_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for child in launched {
+        cancel(conn, &child, by, out)?;
+    }
+    // Cancelled by itself, not with the run above it: the step that launched it fails
+    to_parent(conn, run_id, out)
 }
 
 // ---- Going back ----
@@ -699,8 +1106,12 @@ pub fn retry(conn: &Connection, run: &RunRow, job: &Job, out: &mut Out) -> Resul
     ))?;
     let others: Vec<Job> = stmt.query_map([&run.id, &job.id], job_from_row)?.collect::<rusqlite::Result<_>>()?;
     set_run_state(conn, &run.id, "running")?;
+    reopen_parent(conn, &run.id)?;
     for j in std::iter::once(job).chain(&others) {
         let Some(place) = run.wf.find(&j.step_id) else { continue };
+        if j.kind == "launch" && retry_launched(conn, j, out)? {
+            continue;
+        }
         activity(conn, &run.id, Some(&j.id), "job.retried", &label(&j.step_id, &j.scope))?;
         if j.kind == "team" {
             // A team goes on: its members resume their sessions
@@ -724,6 +1135,33 @@ pub fn retry(conn: &Connection, run: &RunRow, job: &Job, out: &mut Out) -> Resul
         }
     }
     drive(conn, &run.id, out)
+}
+
+/// A launch step retried: the run it launched goes on from its failed or interrupted step, rather than a second
+/// run starting. False when there is nothing to go on with (it never started, or was cancelled): it starts anew.
+fn retry_launched(conn: &Connection, launch: &Job, out: &mut Out) -> Result<bool> {
+    let child: Option<String> = conn
+        .query_row(
+            "SELECT id FROM runs WHERE parent_job = ?1 AND state IN ('failed', 'interrupted') ORDER BY rowid DESC LIMIT 1",
+            [&launch.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(child) = child else { return Ok(false) };
+    let stopped = conn
+        .query_row(
+            &format!(
+                "SELECT {JOB_COLUMNS} FROM jobs WHERE run_id = ?1 AND superseded = 0 AND state IN ('failed', 'interrupted', 'rejected')
+                 AND kind NOT IN ('ask', 'member') ORDER BY rowid DESC LIMIT 1"
+            ),
+            [&child],
+            job_from_row,
+        )
+        .optional()?;
+    let Some(stopped) = stopped else { return Ok(false) };
+    // Reopens this launch step too (reopen_parent)
+    retry(conn, &load_run(conn, &child)?, &stopped, out)?;
+    Ok(true)
 }
 
 // ---- What the host says ----
@@ -849,6 +1287,40 @@ pub fn interrupt_all(conn: &Connection, why: &str) -> Result<()> {
         expire_approvals(conn, &run_id, None, false)?;
         activity(conn, &run_id, None, "run.interrupted", why)?;
         set_run_state(conn, &run_id, "interrupted")?;
+    }
+    // A worktree being made when the app closed is no longer coming: those launch steps are interrupted
+    let mut stmt = conn.prepare("SELECT id, run_id FROM jobs WHERE kind = 'launch' AND state = 'preparing'")?;
+    let preparing: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    for (job_id, run_id) in preparing {
+        end_job(conn, &job_id, Ended { error: Some(why), ..Ended::new("interrupted") })?;
+        activity(conn, &run_id, Some(&job_id), "job.interrupted", why)?;
+        let state: String = conn.query_row("SELECT state FROM runs WHERE id = ?1", [&run_id], |r| r.get(0))?;
+        if is_active(&state) {
+            expire_approvals(conn, &run_id, None, false)?;
+            activity(conn, &run_id, None, "run.interrupted", why)?;
+            set_run_state(conn, &run_id, "interrupted")?;
+        }
+    }
+    // A run waiting on an interrupted launched run is interrupted too, up the chain
+    loop {
+        let mut stmt = conn.prepare(
+            "SELECT j.id, j.run_id FROM jobs j JOIN runs r ON r.parent_job = j.id
+             WHERE j.kind = 'launch' AND j.state IN ('running', 'waiting') AND r.state = 'interrupted'",
+        )?;
+        let waiting: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        if waiting.is_empty() {
+            break;
+        }
+        for (job_id, run_id) in waiting {
+            end_job(conn, &job_id, Ended { error: Some(why), ..Ended::new("interrupted") })?;
+            activity(conn, &run_id, Some(&job_id), "job.interrupted", why)?;
+            let state: String = conn.query_row("SELECT state FROM runs WHERE id = ?1", [&run_id], |r| r.get(0))?;
+            if is_active(&state) {
+                expire_approvals(conn, &run_id, None, false)?;
+                activity(conn, &run_id, None, "run.interrupted", why)?;
+                set_run_state(conn, &run_id, "interrupted")?;
+            }
+        }
     }
     Ok(())
 }

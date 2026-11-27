@@ -38,10 +38,29 @@ struct World {
     _dir: tempfile::TempDir,
 }
 
+const PLAN_APPROVE_BUILD: &str = "name: Fix a bug
+offerInTracket: true
+maxParallelRuns: 2
+steps:
+- id: plan
+  agent: planner
+  instructions: Read the ticket and the code it concerns, then write a short plan. Do not change any file.
+- id: approve
+  approval:
+    summary: steps.plan.output
+  onReject: plan
+- id: build
+  agent: builder
+  input: steps.plan.output
+  instructions: Implement the plan, run the tests, push a branch named after the ticket and open a draft PR.
+";
+
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let workflows = dir.path().join("workflows");
-    workflow::load_all(&workflows).unwrap(); // writes the example: plan → approve → build
+    workflow::load_all(&workflows).unwrap(); // writes the examples and the shared agents
+    // The tests drive a fixed plan → approve → build, whatever the shipped example becomes
+    std::fs::write(workflows.join("fix-a-bug.yaml"), PLAN_APPROVE_BUILD).unwrap();
     let fake = Arc::new(Fake::default());
     let db = Db::open(&dir.path().join("sprocket.sqlite")).unwrap();
     let engine = Engine::new(db, Box::new(FakeSink(fake.clone())), workflows);
@@ -277,6 +296,9 @@ fn jobs_keep_a_log_and_runs_feed_the_activity() {
     let (job, _) = w.last_start();
     w.host(json!({"type": "job.message", "jobId": job, "message": {"type": "system", "subtype": "init", "session_id": "s",
         "mcp_servers": [{"name": "Atlassian2", "status": "connected", "source": "user"}]}}));
+    // A later session of an agent with no MCP server sees only Sprocket's own: the list keeps the user's
+    w.host(json!({"type": "job.message", "jobId": job, "message": {"type": "system", "subtype": "init", "session_id": "s",
+        "mcp_servers": [{"name": "sprocket", "status": "connected"}]}}));
     w.host(json!({"type": "tool.ask", "askId": "a", "jobId": job, "toolName": "Bash", "input": {}}));
     let ask = w.run(&run.id).approvals[0].id.clone();
     w.engine.decide(&ask, true, Some("fine".into()), "Luc").unwrap();
@@ -294,7 +316,8 @@ fn jobs_keep_a_log_and_runs_feed_the_activity() {
 
     let mcp = w.engine.mcp_servers().unwrap();
     assert!(mcp.seen_at.is_some());
-    assert_eq!((mcp.servers[0].name.as_str(), mcp.servers[0].status.as_str()), ("Atlassian2", "connected"));
+    let names: Vec<_> = mcp.servers.iter().map(|s| (s.name.as_str(), s.status.as_str())).collect();
+    assert_eq!(names, [("Atlassian2", "connected")]);
 }
 
 // ---- Conditions, loops, actions and JSON outputs ----
@@ -1054,4 +1077,265 @@ fn live_team() {
     assert_eq!(view.state, "passed");
     let team = view.jobs.iter().find(|j| j.kind == "team").unwrap();
     assert!(team.output.as_deref().unwrap_or_default().to_uppercase().contains("TEAL"));
+}
+
+// ---- Launching another workflow ----
+
+const OUTER: &str = "name: Outer
+steps:
+- id: plan
+  agent: planner
+- id: go
+  launch: inner
+  input: 'Do {{ steps.plan.output }}'
+- id: after
+  agent: builder
+  input: steps.go.output
+";
+
+const INNER: &str = "name: Inner
+steps:
+- id: work
+  agent: builder
+  instructions: 'Work on: {{ request }}'
+";
+
+impl World {
+    /// Starts Outer and ends its plan, so Inner runs: (outer run, inner run, inner's job)
+    fn launched(&self) -> (RunView, RunView, String) {
+        self.with("outer", OUTER);
+        self.with("inner", INNER);
+        let run = self.start_wf("outer");
+        let (plan, _) = self.last_start();
+        self.end(&plan, "the thing");
+        let (work, _) = self.last_start();
+        let child = self.run(&run.id).jobs.iter().find(|j| j.kind == "launch").unwrap().launched_run.clone().unwrap();
+        (self.run(&run.id), self.run(&child), work)
+    }
+
+    fn launch_job(&self, run: &str) -> JobViewLite {
+        let j = self.run(run).jobs.into_iter().rev().find(|j| j.kind == "launch").unwrap();
+        JobViewLite { id: j.id, state: j.state, error: j.error, output: j.output }
+    }
+}
+
+struct JobViewLite {
+    id: String,
+    state: String,
+    error: Option<String>,
+    output: Option<String>,
+}
+
+#[test]
+fn a_launch_step_runs_another_workflow_on_the_ticket_and_gets_its_result() {
+    let w = world();
+    let (run, child, work) = w.launched();
+    let (_, prompt) = w.last_start();
+    assert!(prompt.contains("Work on: Do the thing") && prompt.contains("## What was asked\n\nDo the thing"));
+    assert_eq!((child.workflow_id.as_str(), child.state.as_str(), child.ticket.key.as_str()), ("inner", "running", "SIS-245"));
+    assert_eq!((child.parent_run.as_deref(), child.started_by.as_str()), (Some(run.id.as_str()), "Outer #1"));
+    assert_eq!(w.launch_job(&run.id).state, "running");
+
+    // Tracket sees the outer run, with the inner run's work
+    let tickets = w.engine.tickets().unwrap();
+    assert_eq!((tickets.len(), tickets[0].run_id.as_str(), tickets[0].working), (1, run.id.as_str(), 1));
+
+    w.end(&work, "done it");
+    assert_eq!(w.run(&child.id).state, "passed");
+    assert_eq!(w.launch_job(&run.id).output.as_deref(), Some("done it"));
+    let (after, prompt) = w.last_start();
+    assert!(prompt.contains("## Input from earlier steps\n\ndone it"));
+    w.end(&after, "ok");
+    assert_eq!(w.run(&run.id).state, "passed");
+}
+
+#[test]
+fn a_failed_launched_run_fails_its_step_and_a_retry_goes_on_with_that_run() {
+    let w = world();
+    let (run, child, work) = w.launched();
+    w.fail(&work);
+    assert_eq!((w.run(&child.id).state.as_str(), w.run(&run.id).state.as_str()), ("failed", "failed"));
+    let go = w.launch_job(&run.id);
+    assert_eq!((go.state.as_str(), go.error.as_deref()), ("failed", Some("Inner #1 failed")));
+    // Tracket offers the step that failed down the chain
+    assert_eq!(w.engine.tickets().unwrap()[0].failed_job_id.as_deref(), Some(work.as_str()));
+
+    w.engine.retry_job(&go.id).unwrap();
+    assert_eq!((w.run(&child.id).state.as_str(), w.run(&run.id).state.as_str()), ("running", "running"));
+    assert_eq!(w.launch_job(&run.id).state, "running");
+    assert_eq!(w.engine.runs(None).unwrap().len(), 2, "no second Inner run");
+    let (again, _) = w.last_start();
+    assert_ne!(again, work);
+    w.end(&again, "fixed");
+    let (_, prompt) = w.last_start();
+    assert!(prompt.contains("## Input from earlier steps\n\nfixed"));
+    assert_eq!(w.launch_job(&run.id).state, "done");
+}
+
+#[test]
+fn cancelling_stops_the_launched_run_and_a_launched_run_cancelled_alone_fails_its_step() {
+    let w = world();
+    let (run, child, work) = w.launched();
+    w.engine.cancel_run(&run.id, "Luc").unwrap();
+    assert_eq!((w.run(&child.id).state.as_str(), w.run(&run.id).state.as_str()), ("cancelled", "cancelled"));
+    assert!(w.stopped(&work));
+
+    let w = world();
+    let (run, child, _) = w.launched();
+    w.engine.cancel_run(&child.id, "Luc").unwrap();
+    assert_eq!(w.run(&run.id).state, "failed");
+    let go = w.launch_job(&run.id);
+    assert_eq!(go.error.as_deref(), Some("Inner #1 was cancelled"));
+    // Nothing to go on with: a retry launches it again
+    w.engine.retry_job(&go.id).unwrap();
+    let runs = w.engine.runs(None).unwrap();
+    assert_eq!(runs.len(), 3);
+    assert_eq!((runs[0].workflow_id.as_str(), runs[0].number, runs[0].state.as_str()), ("inner", 2, "running"));
+}
+
+#[test]
+fn the_host_going_away_interrupts_the_launched_run_and_the_one_waiting_on_it() {
+    let w = world();
+    let (run, child, work) = w.launched();
+    w.engine.on_host(HostEvent::Exited);
+    assert_eq!((w.run(&child.id).state.as_str(), w.run(&run.id).state.as_str()), ("interrupted", "interrupted"));
+    assert_eq!(w.launch_job(&run.id).state, "interrupted");
+
+    w.engine.retry_job(&work).unwrap();
+    assert_eq!((w.run(&child.id).state.as_str(), w.run(&run.id).state.as_str()), ("running", "running"));
+    let (again, _) = w.last_start();
+    w.end(&again, "done");
+    assert_eq!(w.run(&child.id).state, "passed");
+    assert_eq!(w.launch_job(&run.id).state, "done");
+}
+
+#[test]
+fn a_workflow_can_t_launch_itself_or_one_already_up_its_chain() {
+    let own = crate::workflow::parse("selfish", "x", "name: S\nsteps:\n- id: a\n  launch: selfish\n", &Default::default());
+    assert!(own.unwrap_err().contains("can't launch itself"));
+
+    let w = world();
+    w.with("ping", "name: Ping\nsteps:\n- id: go\n  launch: pong\n");
+    w.with("pong", "name: Pong\nsteps:\n- id: back\n  launch: ping\n");
+    let run = w.start_wf("ping");
+    assert_eq!(w.run(&run.id).state, "failed");
+    let runs = w.engine.runs(None).unwrap();
+    let pong = runs.iter().find(|r| r.workflow_id == "pong").unwrap();
+    let back = pong.jobs.iter().find(|j| j.kind == "launch").unwrap();
+    assert_eq!(back.error.as_deref(), Some("Ping is already running further up this chain: it would launch itself"));
+    assert_eq!(w.launch_job(&run.id).error.as_deref(), Some("Pong #1 failed"));
+
+    w.with("lost", "name: Lost\nsteps:\n- id: go\n  launch: nowhere\n");
+    let run = w.start_wf("lost");
+    assert_eq!(w.launch_job(&run.id).error.as_deref(), Some("There is no workflow `nowhere`, or its file has a problem"));
+}
+
+// ---- Launching on another ticket, and waiting for room ----
+
+impl World {
+    fn start_in(&self, id: &str, folder: &str) -> RunView {
+        self.engine
+            .start_run(StartRun {
+                workflow: id.into(),
+                ticket: TicketRef { key: "SIS-300".into(), title: "The story".into(), url: "https://x/browse/SIS-300".into() },
+                folder: folder.into(),
+                started_by: "Luc".into(),
+                request: None,
+            })
+            .unwrap()
+    }
+}
+
+const SUBTASKS: &str = "name: Subtasks
+steps:
+- id: list
+  agent: planner
+  output: { subtasks: list }
+- id: each
+  forEach: steps.list.output.subtasks
+  as: subtask
+  parallel: 2
+  steps:
+  - id: do
+    launch: inner
+    ticket: '{{ subtask }}'
+    input: 'Do {{ subtask }}'
+";
+
+#[test]
+fn a_launch_step_on_another_ticket_runs_in_that_tickets_worktree() {
+    let w = world();
+    w.with("subtasks", SUBTASKS);
+    w.with("inner", &format!("{INNER}maxParallelRuns: 5\n"));
+    let repo = crate::worktree::cloned_repo(std::path::Path::new(&w.folder));
+    let run = w.start_in("subtasks", &repo.to_string_lossy());
+    let (list, _) = w.last_start();
+    w.end_with(&list, json!({"subtasks": ["SIS-301 Add the field", "SIS-302"]}));
+
+    let runs = w.engine.runs(None).unwrap();
+    let sub = runs.iter().find(|r| r.ticket.key == "SIS-301").expect("a run on SIS-301");
+    assert_eq!((sub.ticket.title.as_str(), sub.ticket.url.as_str()), ("Add the field", "https://x/browse/SIS-301"));
+    assert!(std::path::Path::new(&sub.folder).ends_with(std::path::Path::new(".claude/worktrees/SIS-301")));
+    assert_eq!(sub.request.as_deref(), Some("Do SIS-301 Add the field"));
+    let other = runs.iter().find(|r| r.ticket.key == "SIS-302").unwrap();
+    assert_eq!(other.ticket.title, "SIS-302");
+
+    // Each subtask is its own row in Tracket, besides the story's
+    let mut keys: Vec<_> = w.engine.tickets().unwrap().into_iter().map(|t| t.ticket_key).collect();
+    keys.sort();
+    assert_eq!(keys, ["SIS-300", "SIS-301", "SIS-302"]);
+
+    for r in [sub, other] {
+        let job = r.jobs.iter().find(|j| j.kind == "agent").unwrap().id.clone();
+        w.end(&job, "done");
+    }
+    assert_eq!(w.run(&run.id).state, "passed");
+}
+
+#[test]
+fn a_launch_step_on_a_bad_ticket_or_without_a_repository_fails() {
+    let w = world();
+    w.with("one", "name: One\nsteps:\n- id: go\n  launch: inner\n  ticket: 'not a key'\n");
+    w.with("inner", INNER);
+    let run = w.start_wf("one");
+    assert_eq!(w.launch_job(&run.id).error.as_deref(), Some("The ticket \"not a key\" doesn't start with a key like ABC-123"));
+
+    // The test folder has a `.git` folder, but isn't a repository: no worktree can be made
+    w.with("two", "name: Two\nsteps:\n- id: go\n  launch: inner\n  ticket: SIS-999\n");
+    let run = w.start_wf("two");
+    assert!(w.launch_job(&run.id).error.unwrap().starts_with("The ticket's worktree:"));
+    assert_eq!(w.run(&run.id).state, "failed");
+}
+
+#[test]
+fn a_launch_step_waits_for_room_at_its_workflows_limit() {
+    let w = world();
+    w.with("inner", INNER); // one run at a time
+    w.with("many", "name: Many\nsteps:\n- id: list\n  agent: planner\n  output: { items: list }\n- id: each\n  forEach: steps.list.output.items\n  parallel: 2\n  steps:\n  - id: do\n    launch: inner\n    input: '{{ item }}'\n");
+    let run = w.start_wf("many");
+    let (list, _) = w.last_start();
+    w.end_with(&list, json!({"items": ["a", "b"]}));
+    let states: Vec<_> = w.run(&run.id).jobs.iter().filter(|j| j.kind == "launch").map(|j| j.state.clone()).collect();
+    assert_eq!(states, ["running", "queued"]);
+    assert_eq!(w.run(&run.id).state, "running");
+
+    let (first, prompt) = w.last_start();
+    assert!(prompt.contains("Work on: a"));
+    w.end(&first, "a done");
+    // Room again: the second one starts
+    let (second, prompt) = w.last_start();
+    assert!(prompt.contains("Work on: b"));
+    w.end(&second, "b done");
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "passed");
+    let lp = view.jobs.iter().find(|j| j.kind == "loop").unwrap();
+    assert_eq!(lp.output.as_deref(), Some(r#"["a done","b done"]"#));
+
+    // Cancelled while it waits: nothing starts later
+    let run = w.start_wf("many");
+    let (list, _) = w.last_start();
+    w.end_with(&list, json!({"items": ["c", "d"]}));
+    w.engine.cancel_run(&run.id, "Luc").unwrap();
+    let states: Vec<_> = w.run(&run.id).jobs.iter().filter(|j| j.kind == "launch").map(|j| j.state.clone()).collect();
+    assert_eq!(states, ["stopped", "stopped"]);
 }

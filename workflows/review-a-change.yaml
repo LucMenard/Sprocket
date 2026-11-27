@@ -1,0 +1,23 @@
+name: Review a change
+description: Review the ticket's branch for bugs and security holes, and comment the findings on the ticket. Changes nothing.
+offerInTracket: true
+maxParallelRuns: 3
+steps:
+- id: review
+  branches:
+  - - id: code_review
+      agent: code-reviewer
+      instructions: Review the changes of this branch against the main branch.
+  - - id: security_review
+      agent: security-reviewer
+      instructions: Review the changes of this branch against the main branch.
+- id: report
+  agent: notifier
+  action:
+    do: comment
+    text: |
+      Code review:
+      {{ steps.code_review.output }}
+
+      Security review:
+      {{ steps.security_review.output }}

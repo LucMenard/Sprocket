@@ -91,7 +91,7 @@ export interface Point {
   y: number
 }
 
-export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team'
+export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch'
 export type OutputType = 'text' | 'number' | 'yes/no' | 'list'
 export type ActionKind = 'comment' | 'status' | 'slack' | 'other'
 
@@ -132,6 +132,10 @@ export interface WorkflowStep {
   branches: WorkflowStep[][]
   /** A team step: agent types working on it together over the board */
   team: Team | null
+  /** A launch step: the workflow it runs on the same ticket, by its id; `input` is what that run is asked */
+  launch: string | null
+  /** A launch step's ticket (`{{ subtask }}`, giving `SIS-301` or `SIS-301 Its title`); none: the run's own */
+  ticket: string | null
 }
 
 export interface TeamLimits {
@@ -181,7 +185,8 @@ export interface WorkflowList {
 }
 
 export type RunState = 'running' | 'waiting' | 'passed' | 'failed' | 'cancelled' | 'interrupted'
-export type JobState = 'running' | 'waiting' | 'done' | 'failed' | 'rejected' | 'stopped' | 'interrupted'
+/** `preparing` and `queued`: a launch step making its ticket's worktree, or waiting for its workflow to have room */
+export type JobState = 'running' | 'waiting' | 'done' | 'failed' | 'rejected' | 'stopped' | 'interrupted' | 'preparing' | 'queued'
 
 export interface Ticket {
   key: string
@@ -193,7 +198,7 @@ export interface Job {
   id: string
   stepId: string
   /** `ask`: another agent type answering a question a step asked (its `parentJob`) */
-  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member'
+  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member' | 'launch'
   /** `""` in the workflow itself; `each[2]/` for the third item of the loop `each` */
   scope: string
   /** Redone since (after a rejection or a retry): history only */
@@ -203,6 +208,8 @@ export interface Job {
   /** For an ask: the job that asked, and its question */
   parentJob: string | null
   question: string | null
+  /** For a launch step: the run it started */
+  launchedRun: string | null
   state: JobState
   attempt: number
   output: string | null
@@ -263,6 +270,8 @@ export interface Run {
   startedBy: string
   /** What someone asked for, on a run started from a request */
   request: string | null
+  /** For a run launched by another run's step: that run */
+  parentRun: string | null
   state: RunState
   startedAt: string
   endedAt: string | null
