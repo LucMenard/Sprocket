@@ -1,9 +1,11 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect, useState, type ReactNode } from 'react'
+import { SettingsDialog } from '@/features/settings/SettingsDialog'
+import { useUpdates } from '@/features/update/updateStore'
 import { inTauri } from '@/lib/api'
 import { useNav, type ViewId } from '@/lib/nav'
 import { useStatus, useTracketConnection } from '@/lib/queries'
-import { getThemePreference, setThemePreference, type ThemePreference } from '@/lib/theme'
+import { setThemePreference, useThemePreference, type ThemePreference } from '@/lib/theme'
 import { Logo } from './Logo'
 
 const TABS: { id: ViewId; label: string }[] = [
@@ -117,23 +119,45 @@ const THEME_ICON: Record<ThemePreference, string> = {
 }
 
 function ThemeButton() {
-  const [preference, setPreference] = useState(getThemePreference)
+  const preference = useThemePreference()
   const title = `Theme: ${preference[0].toUpperCase()}${preference.slice(1)} (click for ${NEXT[preference]})`
   return (
     <button
       type="button"
       aria-label={title}
       title={title}
-      onClick={() => {
-        setThemePreference(NEXT[preference])
-        setPreference(NEXT[preference])
-      }}
+      onClick={() => setThemePreference(NEXT[preference])}
       className={`flex size-9 items-center justify-center rounded-lg text-[var(--mfg)] ${ghost}`}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d={THEME_ICON[preference]} />
       </svg>
     </button>
+  )
+}
+
+/** Opens Settings; a dot on it while a new version waits to be installed. */
+function SettingsButton() {
+  const [open, setOpen] = useState(false)
+  const pending = useUpdates((s) => s.status.kind === 'available')
+  const label = pending ? 'Settings (an update is available)' : 'Settings'
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen(true)}
+        className={`relative flex size-9 items-center justify-center rounded-lg text-[var(--mfg)] ${ghost}`}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+        {pending && <span aria-hidden className="absolute top-1.5 right-1.5 size-[7px] rounded-full" style={{ background: 'var(--lit)' }} />}
+      </button>
+      {open && <SettingsDialog initial={pending ? 'updates' : 'appearance'} onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
@@ -170,6 +194,7 @@ export function AppHeader({ waiting }: { waiting: number }) {
         <div className="ml-auto flex items-center gap-2.5">
           <Status />
           <ThemeButton />
+          <SettingsButton />
         </div>
       </div>
     </>

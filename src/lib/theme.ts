@@ -1,5 +1,6 @@
 // Adapted from Tracket (MIT, Copyright (c) 2026 Hydhen): same three-way choice, kept in localStorage.
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useSyncExternalStore } from 'react'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 
@@ -37,6 +38,17 @@ export function setThemePreference(preference: ThemePreference) {
     // still applies for this session
   }
   apply()
+  listeners.forEach((listener) => listener())
+}
+
+const listeners = new Set<() => void>()
+
+/** The choice, kept current wherever it is changed (the header's button or Settings). */
+export function useThemePreference(): ThemePreference {
+  return useSyncExternalStore((listener) => {
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  }, getThemePreference)
 }
 
 export function initTheme() {
