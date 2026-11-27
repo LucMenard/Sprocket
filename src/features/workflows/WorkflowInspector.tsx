@@ -243,6 +243,11 @@ export function WorkflowInspector({
     const id = editing.addStep(agents[0] ? 'agent' : 'approval', { parent: step.id, branch, index: step[branch].length }, agents[0]?.id ?? null)
     if (id) onSelect(id)
   }
+  const addInCase = (lane: number) => {
+    if (!step) return
+    const id = editing.addStep(agents[0] ? 'agent' : 'approval', { parent: step.id, branch: 'branches', lane, index: step.branches[lane]?.length ?? 0 }, agents[0]?.id ?? null)
+    if (id) onSelect(id)
+  }
   const sourceSelect = (id: string, value: string | null, none: string, onChange: (v: string | null) => void) => (
     <select id={id} className="ct-input" value={value ?? ''} onChange={(e) => onChange(e.target.value || null)}>
       <option value="">{none}</option>
@@ -516,6 +521,80 @@ export function WorkflowInspector({
                     </span>
                   </div>
                 ))}
+              </div>
+            </>
+          )}
+
+          {step.kind === 'switch' && (
+            <>
+              <Field
+                label="Value"
+                htmlFor="n-switch"
+                help="Its value picks the case of the same name, compared as text without case: Bug matches bug, 2 matches 2. No case: the default, else the step fails."
+              >
+                <textarea id="n-switch" rows={2} className="ct-input h-auto py-2.5 leading-normal ct-mono text-[13px]" value={step.switch ?? ''} onChange={(e) => set({ switch: e.target.value })} />
+              </Field>
+              <div className="flex flex-col gap-2">
+                <span className="ct-label">Cases</span>
+                {step.cases.map((c, i) => {
+                  const lane = step.branches[i] ?? []
+                  return (
+                    <div key={i} className="flex min-h-10 items-center gap-2 rounded-lg border border-ct-border px-2">
+                      <input
+                        aria-label={`Case ${i + 1}`}
+                        className="ct-input h-8 min-w-0 flex-1 ct-mono"
+                        value={c}
+                        onChange={(e) => set({ cases: step.cases.map((o, j) => (j === i ? e.target.value : o)) })}
+                      />
+                      <span className="flex shrink-0 items-center gap-1 text-[13px] text-ct-text-3">
+                        {lane[0] ? (
+                          <button type="button" className="hover:underline" onClick={() => onSelect(lane[0].id)}>
+                            → {lane[0].id}
+                            {lane.length > 1 ? ` +${lane.length - 1}` : ''}
+                          </button>
+                        ) : (
+                          '→ goes on'
+                        )}
+                        <button type="button" className="ct-btn ct-btn-ghost h-7 px-1.5" aria-label={`Add a step to the case ${c}`} title="Add a step" onClick={() => addInCase(i)}>
+                          <Plus className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          className="ct-btn ct-btn-ghost h-7 px-1.5"
+                          aria-label={`Remove the case ${c}`}
+                          title={lane.length ? 'Remove the case: its steps come after the switch' : 'Remove the case'}
+                          disabled={step.cases.length <= 1}
+                          onClick={() => editing.unlink({ type: 'case', step: step.id, lane: i })}
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </span>
+                    </div>
+                  )
+                })}
+                <button
+                  type="button"
+                  className="ct-btn self-start"
+                  onClick={() => set({ cases: [...step.cases, `case-${step.cases.length + 1}`], branches: [...step.branches, []] })}
+                >
+                  <Plus className="size-4" /> Add a case
+                </button>
+                <div className="flex min-h-10 items-center justify-between gap-2 rounded-lg border border-ct-border px-3">
+                  <span className="font-semibold">default</span>
+                  <span className="flex items-center gap-1.5 text-[13px] text-ct-text-3">
+                    {step.else[0] ? (
+                      <button type="button" className="hover:underline" onClick={() => onSelect(step.else[0].id)}>
+                        → {step.else[0].id}
+                        {step.else.length > 1 ? ` +${step.else.length - 1}` : ''}
+                      </button>
+                    ) : (
+                      'none: no case fails the step'
+                    )}
+                    <button type="button" className="ct-btn ct-btn-ghost h-7 px-1.5" aria-label="Add a step to the default" title="Add a step" onClick={() => addInside('else')}>
+                      <Plus className="size-4" />
+                    </button>
+                  </span>
+                </div>
               </div>
             </>
           )}

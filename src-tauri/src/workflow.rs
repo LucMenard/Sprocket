@@ -290,6 +290,13 @@ pub struct FileStep {
     pub branches: Option<Vec<Vec<FileStep>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<FileTeam>,
+    /// A switch: the expression whose value picks one of `cases` (by its name), else `default`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cases: Option<Vec<FileCase>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Vec<FileStep>>,
     /// Another workflow to run on the same ticket, by its file name; `input` becomes its request
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<String>,
@@ -311,6 +318,14 @@ pub struct FileStep {
 pub struct FileApproval {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+}
+
+/// One case of a switch: the value it matches, as text, and its steps.
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FileCase {
+    pub case: String,
+    pub steps: Vec<FileStep>,
 }
 
 /// The type of one field of an agent's JSON output.
@@ -382,6 +397,8 @@ pub enum StepKind {
     Team,
     /// Another workflow, run on the same ticket; the step ends when that run does
     Launch,
+    /// One branch out of several, picked by a value
+    Switch,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -441,6 +458,11 @@ pub struct Step {
     /// A launch step's ticket, a template: `{{ subtask }}`; none: the run's own ticket
     #[serde(default)]
     pub ticket: Option<String>,
+    /// A switch's expression; its cases are `cases` (the values) with `branches` (their steps), its default `else`
+    #[serde(default)]
+    pub switch: Option<String>,
+    #[serde(default)]
+    pub cases: Vec<String>,
 }
 
 impl Step {
@@ -520,6 +542,17 @@ impl Step {
                     budget_usd: Some(t.limits.budget_usd),
                     minutes: Some(t.limits.minutes),
                 });
+            }
+            StepKind::Switch => {
+                f.switch = text(&self.switch);
+                f.cases = Some(
+                    self.cases
+                        .iter()
+                        .zip(&self.branches)
+                        .map(|(case, b)| FileCase { case: case.trim().to_string(), steps: b.iter().map(Step::to_file).collect() })
+                        .collect(),
+                );
+                f.default = Some(self.otherwise.iter().map(Step::to_file).collect()).filter(|d: &Vec<FileStep>| !d.is_empty());
             }
             StepKind::Launch => {
                 f.launch = text(&self.launch);
@@ -744,20 +777,30 @@ impl Checker<'_> {
             s.branches.is_some(),
             s.team.is_some(),
             s.launch.is_some(),
+            s.switch.is_some(),
         ];
-        let kind = match kinds {
-            [false, false, false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
-            [true, false, false, false, false, false, false] => StepKind::Approval,
-            [false, true, false, false, false, false, false] => StepKind::Action,
-            [false, false, true, false, false, false, false] => StepKind::Condition,
-            [false, false, false, true, false, false, false] => StepKind::ForEach,
-            [false, false, false, false, true, false, false] => StepKind::Parallel,
-            [false, false, false, false, false, true, false] => StepKind::Team,
-            [false, false, false, false, false, false, true] => StepKind::Launch,
-            [false, false, false, false, false, false, false] => {
-                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches`, `team` or `launch`"))
+        let kind = match kinds.iter().filter(|k| **k).count() {
+            0 if s.agent.is_some() => StepKind::Agent,
+            0 => {
+                return Err(format!(
+                    "Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches`, `team`, `launch` or `switch`"
+                ))
             }
-            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches`, a `team` or a `launch`")),
+            1 => [
+                StepKind::Approval,
+                StepKind::Action,
+                StepKind::Condition,
+                StepKind::ForEach,
+                StepKind::Parallel,
+                StepKind::Team,
+                StepKind::Launch,
+                StepKind::Switch,
+            ][kinds.iter().position(|k| *k).unwrap_or_default()],
+            _ => {
+                return Err(format!(
+                    "Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches`, a `team`, a `launch` or a `switch`"
+                ))
+            }
         };
         // Fields that belong to another kind of step are a mistake, not something to ignore
         let stray = [
@@ -776,6 +819,8 @@ impl Checker<'_> {
             ("team", s.team.is_some() && kind != StepKind::Team),
             ("launch", s.launch.is_some() && kind != StepKind::Launch),
             ("ticket", s.ticket.is_some() && kind != StepKind::Launch),
+            ("cases", s.cases.is_some() && kind != StepKind::Switch),
+            ("default", s.default.is_some() && kind != StepKind::Switch),
         ];
         if let Some((field, _)) = stray.iter().find(|(_, bad)| *bad) {
             return Err(format!("Step `{id}`: `{field}` doesn't belong on this kind of step"));
@@ -802,6 +847,8 @@ impl Checker<'_> {
             team: None,
             launch: None,
             ticket: None,
+            switch: None,
+            cases: Vec::new(),
         };
         let mut gives: Option<Vec<String>> = None;
         match kind {
@@ -926,6 +973,38 @@ impl Checker<'_> {
                     step.branches.push(self.block(lane, &mut lane_vis)?);
                     after.steps.extend(lane_vis.steps);
                 }
+                *vis = after;
+                return Ok(step);
+            }
+            StepKind::Switch => {
+                vis.check(s.switch.as_deref().unwrap_or_default(), &at("switch"))?;
+                let cases = s.cases.unwrap_or_default();
+                if cases.is_empty() {
+                    return Err(format!("Step `{id}`: a switch needs `cases`"));
+                }
+                // Each branch reads what came before; the steps after read all of them (null when not taken)
+                let mut after = vis.clone();
+                for (i, c) in cases.into_iter().enumerate() {
+                    let name = c.case.trim().to_string();
+                    if name.is_empty() {
+                        return Err(format!("Step `{id}`: case {} has no value to match", i + 1));
+                    }
+                    // Values are matched ignoring case, so `Bug` after `bug` could never be taken
+                    if name.eq_ignore_ascii_case("default") {
+                        return Err(format!("Step `{id}`: a case can't be called `default`: put those steps under `default`"));
+                    }
+                    if step.cases.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+                        return Err(format!("Step `{id}`: the case `{name}` is there twice (cases are matched ignoring case)"));
+                    }
+                    let mut lane_vis = vis.clone();
+                    step.branches.push(self.block(c.steps, &mut lane_vis)?);
+                    step.cases.push(name);
+                    after.steps.extend(lane_vis.steps);
+                }
+                let mut default_vis = vis.clone();
+                step.otherwise = self.block(s.default.unwrap_or_default(), &mut default_vis)?;
+                after.steps.extend(default_vis.steps);
+                step.switch = s.switch.clone();
                 *vis = after;
                 return Ok(step);
             }
@@ -1278,6 +1357,45 @@ steps:
   agent: planner
   input: steps.design.output
 ";
+
+    #[test]
+    fn reads_a_switch_and_writes_it_back() {
+        let yaml = "name: S
+steps:
+- id: triage
+  agent: planner
+  output: { kind: text }
+- id: route
+  switch: steps.triage.output.kind
+  cases:
+  - case: bug
+    steps:
+    - id: fix
+      agent: builder
+  - case: feature
+    steps:
+    - id: build
+      agent: builder
+  default:
+  - id: ask
+    agent: planner
+- id: after
+  agent: planner
+  input: steps.fix.output
+";
+        let w = parse("s", "s.yaml", yaml, &shared()).unwrap();
+        let s = &w.steps[1];
+        assert_eq!((s.kind, s.cases.clone(), s.branches.len(), s.otherwise.len()), (StepKind::Switch, vec!["bug".into(), "feature".into()], 2, 1));
+        assert_eq!(w.find("build").unwrap().step.id, "build");
+        let again = serde_yaml::to_string(&FileWorkflow { steps: w.steps.iter().map(Step::to_file).collect(), ..serde_yaml::from_str(yaml).unwrap() }).unwrap();
+        assert_eq!(parse("s", "s.yaml", &again, &shared()).unwrap().steps[1].cases, ["bug", "feature"]);
+
+        let err = |from: &str, to: &str| parse("s", "s.yaml", &yaml.replacen(from, to, 1), &shared()).unwrap_err();
+        assert!(err("case: feature", "case: Bug").contains("there twice"));
+        assert!(err("case: feature", "case: default").contains("`default`"));
+        assert!(err("switch: steps.triage.output.kind", "switch: steps.nope.output").contains("no earlier step `nope`"));
+        assert!(err("  default:\n", "  then:\n").contains("`then` doesn't belong"));
+    }
 
     #[test]
     fn reads_a_launch_step_and_writes_it_back() {

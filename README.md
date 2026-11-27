@@ -12,6 +12,9 @@ Windows only for now.
     available to later steps as `steps.<id>.output`, in text or as JSON fields when the step asks for them.
   - A condition takes its `yes` or its `no` branch from an expression such as
     `steps.triage.output.risky and steps.triage.output.severity == "high"`.
+  - A switch takes one of several branches: the value of its expression (`switch: steps.triage.output.kind`)
+    picks the case of that name (`cases: [{case: bug, steps: …}, …]`), compared as text without case, else its
+    `default`. With no case for the value and no default, the step fails. The steps after it read whichever ran.
   - A For each takes every item of a list through its steps, one at a time or a few in parallel, and stops or goes
     on when an item fails.
   - Parallel branches run at the same time, and the step after them waits for all of them.

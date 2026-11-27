@@ -572,6 +572,28 @@ fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out
             };
             block(conn, run, if branch == "then" { &step.then } else { &step.otherwise }, scope, out)
         }
+        StepKind::Switch => {
+            // The case taken: its name, or `default`
+            let taken = match job {
+                Some(j) if j.state == "done" => j.output.unwrap_or_default(),
+                Some(j) => return Ok(status_of(&j.state)),
+                None => {
+                    let job_id = insert_job(conn, &run.id, scope, &step.id, "switch", "running")?;
+                    match expr::parse(step.switch.as_deref().unwrap_or_default()).and_then(|e| pick_case(step, &evaluate(conn, run, scope, &e))) {
+                        Ok(taken) => {
+                            end_job(conn, &job_id, Ended { output: Some(&taken), ..Ended::new("done") })?;
+                            activity(conn, &run.id, Some(&job_id), "switch.decided", &format!("{}: {taken}", label(&step.id, scope)))?;
+                            taken
+                        }
+                        Err(why) => return fail_job(conn, &run.id, &job_id, &why),
+                    }
+                }
+            };
+            match step.cases.iter().position(|c| *c == taken) {
+                Some(i) => block(conn, run, &step.branches[i], scope, out),
+                None => block(conn, run, &step.otherwise, scope, out),
+            }
+        }
         StepKind::ForEach => for_each(conn, run, step, scope, job, out),
         // No job of its own: its state is its branches'. Every branch is driven, so all of them start
         StepKind::Parallel => {
@@ -582,6 +604,21 @@ fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out
             Ok([Status::Busy, Status::Interrupted, Status::Failed].into_iter().find(|s| statuses.contains(s)).unwrap_or(Status::Done))
         }
     }
+}
+
+/// The switch's case for this value, compared as text, ignoring case and spaces around: `bug` matches "Bug " and
+/// `2` the number 2. No case: `default` when the switch has steps there, else the step fails.
+fn pick_case(step: &Step, value: &Value) -> std::result::Result<String, String> {
+    let text = expr::to_text(value);
+    let text = text.trim();
+    if let Some(case) = step.cases.iter().find(|c| c.trim().eq_ignore_ascii_case(text)) {
+        return Ok(case.clone());
+    }
+    if !step.otherwise.is_empty() {
+        return Ok("default".into());
+    }
+    let cases = step.cases.join(", ");
+    Err(if text.is_empty() { format!("The switch got no value, and has no default (cases: {cases})") } else { format!("No case for \"{text}\", and no default (cases: {cases})") })
 }
 
 /// A loop: its items go through its steps, `parallel` at a time; it ends when they all have.
@@ -658,7 +695,7 @@ fn for_each(conn: &Connection, run: &RunRow, step: &Step, scope: &str, job: Opti
     for i in 0..count {
         let s = item_scope(scope, &step.id, i);
         let mut value = Value::Null;
-        for inner in step.steps.iter().rev().filter(|s| s.kind != StepKind::Condition) {
+        for inner in step.steps.iter().rev().filter(|s| !matches!(s.kind, StepKind::Condition | StepKind::Switch)) {
             if let Some(j) = current(conn, &run.id, &s, &inner.id)? {
                 value = value_of(&j);
                 break;
@@ -992,7 +1029,7 @@ pub fn wake_queued(conn: &Connection, out: &mut Out) -> Result<()> {
 /// What a run gives the step that launched it: what its last step gave, as text.
 fn run_result(conn: &Connection, run_id: &str) -> Result<String> {
     let run = load_run(conn, run_id)?;
-    for step in run.wf.steps.iter().rev().filter(|s| s.kind != StepKind::Condition) {
+    for step in run.wf.steps.iter().rev().filter(|s| !matches!(s.kind, StepKind::Condition | StepKind::Switch)) {
         if let Some(j) = current(conn, run_id, "", &step.id)? {
             return Ok(expr::to_text(&value_of(&j)));
         }

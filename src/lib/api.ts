@@ -93,7 +93,7 @@ export interface Point {
   y: number
 }
 
-export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch'
+export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch' | 'switch'
 export type OutputType = 'text' | 'number' | 'yes/no' | 'list'
 export type ActionKind = 'comment' | 'status' | 'slack' | 'other'
 
@@ -138,6 +138,9 @@ export interface WorkflowStep {
   launch: string | null
   /** A launch step's ticket (`{{ subtask }}`, giving `SIS-301` or `SIS-301 Its title`); none: the run's own */
   ticket: string | null
+  /** A switch's expression: its value picks the case of that name (in `branches`, same order), else `else` (the default) */
+  switch: string | null
+  cases: string[]
 }
 
 export interface TeamLimits {
@@ -228,7 +231,7 @@ export interface Job {
   id: string
   stepId: string
   /** `ask`: another agent type answering a question a step asked (its `parentJob`) */
-  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member' | 'launch'
+  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member' | 'launch' | 'switch'
   /** `""` in the workflow itself; `each[2]/` for the third item of the loop `each` */
   scope: string
   /** Redone since (after a rejection or a retry): history only */

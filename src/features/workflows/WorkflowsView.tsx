@@ -12,7 +12,7 @@ import { draftProblems, useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
-const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'forEach', 'approval', 'action', 'launch']
+const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'switch', 'forEach', 'approval', 'action', 'launch']
 
 /**
  * Save, off while there is nothing to save or the graph isn't complete. Hovering it (or focusing it) says what

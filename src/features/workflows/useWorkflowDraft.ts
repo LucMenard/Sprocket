@@ -56,6 +56,13 @@ export function draftProblems(d: WorkflowDraft): string[] {
     if (s.kind === 'forEach' && !s.steps.length) out.push(`The loop ${s.id} has no steps.`)
     if ((s.kind === 'agent' || s.kind === 'action') && !s.agent) out.push(`${s.id} has no agent type.`)
     if (s.kind === 'launch' && !s.launch) out.push(`${s.id} has no workflow to launch.`)
+    if (s.kind === 'switch') {
+      if (!s.cases.length) out.push(`The switch ${s.id} has no case.`)
+      const names = s.cases.map((c) => c.trim().toLowerCase())
+      if (names.some((n) => !n)) out.push(`A case of the switch ${s.id} has no value.`)
+      if (names.includes('default')) out.push(`A case of the switch ${s.id} is called "default": use its default branch.`)
+      if (new Set(names).size !== names.length) out.push(`The switch ${s.id} has the same case twice (cases ignore case).`)
+    }
     if (s.kind === 'team') {
       const t = s.team
       if (!t || t.members.length < 2) out.push(`The team ${s.id} needs two members or more.`)
@@ -81,7 +88,7 @@ function freeId(d: WorkflowDraft, base: string, taken: string[] = []) {
   return id
 }
 
-const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together', team: 'team', launch: 'launch' }
+const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together', team: 'team', launch: 'launch', switch: 'route' }
 
 /** `steps.old.` → `steps.new.` in a text */
 const renameIn = (text: string | null | undefined, from: string, to: string) =>
@@ -208,7 +215,7 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
     // Already linked: the next step, the start of one of its branches, or of a parallel branch after it
     const after = source ? source.block[source.index + 1] : current.steps[0]
     const starts = [after, ...(after?.kind === 'parallel' ? after.branches.map((b) => b[0]) : [])]
-    if (source) starts.push(source.step.then[0], source.step.else[0], source.step.steps[0])
+    if (source) starts.push(source.step.then[0], source.step.else[0], source.step.steps[0], ...(source.step.kind === 'switch' ? source.step.branches.map((b) => b[0]) : []))
     if (starts.some((s) => s?.id === to)) return null
     if (source?.step.kind === 'approval' && source.block.slice(0, source.index).some((s) => s.id === to)) {
       update((d) => void (find(d, from)!.step.onReject = to))
@@ -232,6 +239,14 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
       if (s.kind === 'condition' && s.then.length === 0) return void s.then.push(...moved)
       if (s.kind === 'condition' && s.else.length === 0) return void s.else.push(...moved)
       if (s.kind === 'forEach' && s.steps.length === 0) return void s.steps.push(...moved)
+      // A switch: its first empty case, else its default when it has none, else a new case
+      if (s.kind === 'switch') {
+        const empty = s.branches.findIndex((b) => b.length === 0)
+        if (empty >= 0) return void s.branches[empty].push(...moved)
+        if (s.else.length === 0) return void s.else.push(...moved)
+        s.cases.push(`case-${s.cases.length + 1}`)
+        return void s.branches.push(moved)
+      }
       const next = at.block[at.index + 1]
       if (!next) at.block.push(...moved)
       else if (next.kind === 'parallel') next.branches.push(moved)
@@ -255,6 +270,14 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
       if (link.type === 'next') {
         const at = find(d, link.to)
         if (at) d.loose.push(at.block.splice(at.index))
+        return
+      }
+      if (link.type === 'case') {
+        // The case goes; its steps come right after the switch
+        const at = find(d, link.step)!
+        at.step.cases.splice(link.lane, 1)
+        const steps = at.step.branches.splice(link.lane, 1)[0]
+        at.block.splice(at.index + 1, 0, ...(steps ?? []))
         return
       }
       const id = link.type === 'lane' ? link.group : link.condition
@@ -358,6 +381,14 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
             step.if = source ? `steps.${source.id}.output` : 'true'
             step.then = [work()]
             break
+          case 'switch': {
+            // On a text field of the step before, when it has one
+            const textField = source?.output.find((f) => f.type === 'text')
+            step.switch = source ? `steps.${source.id}.output${textField ? `.${textField.name}` : ''}` : "'a'"
+            step.cases = ['a', 'b']
+            step.branches = [[work()], []]
+            break
+          }
           case 'forEach':
             step.forEach = source ? `steps.${source.id}.output${listField ? `.${listField.name}` : ''}` : "'one item'"
             step.as = 'item'

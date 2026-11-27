@@ -1510,3 +1510,66 @@ fn run_now_starts_a_run_on_a_repository_with_no_ticket() {
     assert_eq!((run.ticket.is_none(), run.started_by.as_str()), (true, "You, in Sprocket"));
     assert_eq!(w.engine.run_now("fix-a-bug", "relative", None).unwrap_err().kind, "invalid");
 }
+
+// ---- Switch ----
+
+const ROUTE: &str = "name: Route
+steps:
+- id: triage
+  agent: planner
+  output: { kind: text }
+- id: route
+  switch: steps.triage.output.kind
+  cases:
+  - case: bug
+    steps:
+    - id: fix
+      agent: builder
+  - case: feature
+    steps:
+    - id: build
+      agent: builder
+DEFAULT- id: after
+  agent: planner
+  input: '{{ steps.fix.output }}{{ steps.build.output }}{{ steps.other.output }}'
+";
+
+fn route(default: bool) -> String {
+    let text = ROUTE.replace("DEFAULT", if default { "  default:\n  - id: other\n    agent: builder\n" } else { "" });
+    // Without a default there is no `other` step to read
+    if default { text } else { text.replace("{{ steps.other.output }}", "") }
+}
+
+#[test]
+fn a_switch_takes_the_case_its_value_names_or_its_default() {
+    let w = world();
+    w.with("route", &route(true));
+    for (kind, step) in [("Feature ", "build"), ("bug", "fix"), ("question", "other")] {
+        let run = w.start_wf("route");
+        let (triage, _) = w.last_start();
+        w.end_with(&triage, json!({ "kind": kind }));
+        let (job, prompt) = w.last_start();
+        assert!(prompt.contains(&format!("Your step: {step}.")), "{kind}: {prompt}");
+        let taken = w.run(&run.id).jobs.into_iter().find(|j| j.kind == "switch").unwrap().output.unwrap();
+        assert_eq!(taken, if step == "other" { "default" } else { kind.trim().to_lowercase().leak() as &str });
+        w.end(&job, "done here");
+        // The step after reads whichever branch ran
+        let (after, prompt) = w.last_start();
+        assert!(prompt.contains("## Input from earlier steps\n\ndone here"));
+        w.end(&after, "ok");
+        assert_eq!(w.run(&run.id).state, "passed");
+    }
+}
+
+#[test]
+fn a_switch_with_no_case_for_its_value_and_no_default_fails() {
+    let w = world();
+    w.with("route", &route(false));
+    let run = w.start_wf("route");
+    let (triage, _) = w.last_start();
+    w.end_with(&triage, json!({ "kind": "question" }));
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "failed");
+    let switch = view.jobs.iter().find(|j| j.kind == "switch").unwrap();
+    assert_eq!(switch.error.as_deref(), Some("No case for \"question\", and no default (cases: bug, feature)"));
+}
