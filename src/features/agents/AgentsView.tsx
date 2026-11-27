@@ -5,6 +5,7 @@ import { useRuns } from '@/features/runs/useRuns'
 import { useRunSelection } from '@/features/runs/useRunSelection'
 import { useWorkflows } from '@/features/workflows/useWorkflows'
 import { api, type AgentType, type AppError } from '@/lib/api'
+import { workLabel } from '@/lib/format'
 import { useNav } from '@/lib/nav'
 import { useMcpServers } from '@/lib/queries'
 import { agentOf, allSteps } from '@/lib/steps'
@@ -173,7 +174,7 @@ export function AgentsView() {
                     go('runs')
                   }}
                 >
-                  <span className="font-medium ct-mono">{run.ticket.key}</span>
+                  <span className="font-medium ct-mono">{workLabel(run)}</span>
                   <span className="truncate text-xs text-ct-text-3">{job.stepId}</span>
                 </button>
               ))}

@@ -5,7 +5,7 @@ import { useRunSelection } from '@/features/runs/useRunSelection'
 import { useWorkflows } from '@/features/workflows/useWorkflows'
 import { describe, isAttention } from '@/lib/activity'
 import type { Run } from '@/lib/api'
-import { when } from '@/lib/format'
+import { when, workLabel } from '@/lib/format'
 import { useNav } from '@/lib/nav'
 import { useActivity } from '@/lib/queries'
 import { agentOf } from '@/lib/steps'
@@ -107,7 +107,7 @@ export function OverviewView() {
                     disabled={!first}
                     onClick={() => openRun(first?.run.id ?? null)}
                   >
-                    {first?.run.ticket.key ?? ''}
+                    {first ? workLabel(first.run) : ''}
                   </button>
                 </div>
               )

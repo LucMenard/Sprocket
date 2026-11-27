@@ -124,6 +124,22 @@ async fn start_run(State(ctx): State<Arc<Ctx>>, Json(req): Json<StartRun>) -> Re
     }
 }
 
+/// A webhook's call: what to ask, and the ticket when there is one. The folder is the trigger's, never the caller's.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HookCall {
+    request: Option<String>,
+    ticket: Option<crate::engine::TicketRef>,
+}
+
+async fn start_from_webhook(State(ctx): State<Arc<Ctx>>, Path(id): Path<String>, body: Option<Json<HookCall>>) -> Response {
+    let call = body.map(|Json(c)| c).unwrap_or_default();
+    match ctx.engine.start_from_webhook(&id, call.request.as_deref(), call.ticket.as_ref()) {
+        Ok(run) => (StatusCode::CREATED, Json(run)).into_response(),
+        Err(e) => from_app(e),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Decision {
@@ -180,6 +196,7 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/workflows", get(workflows))
         .route("/v1/runs", get(list_runs).post(start_run))
+        .route("/v1/workflows/{id}/start", post(start_from_webhook))
         .route("/v1/tickets", get(tickets))
         .route("/v1/runs/{id}/show", post(show_run))
         .route("/v1/runs/{id}/cancel", post(cancel))

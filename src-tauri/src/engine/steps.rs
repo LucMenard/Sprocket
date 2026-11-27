@@ -40,6 +40,22 @@ pub struct RunRow {
     pub state: String,
 }
 
+impl RunRow {
+    /// A run started on a schedule, a webhook or by hand in Sprocket may have no Jira ticket: its key is empty
+    pub fn has_ticket(&self) -> bool {
+        !self.ticket_key.is_empty()
+    }
+
+    /// What the run works on, as the first lines of an agent's prompt.
+    pub fn heading(&self) -> String {
+        if self.has_ticket() {
+            format!("Jira ticket {}: {}\n{}", self.ticket_key, self.ticket_title, self.ticket_url)
+        } else {
+            format!("The repository at {}. This run has no Jira ticket.", self.folder)
+        }
+    }
+}
+
 pub fn new_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("OS random source");
@@ -355,10 +371,8 @@ pub fn comment_signature(run: &RunRow) -> String {
 
 fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, feedback: Option<&str>) -> String {
     let mut prompt = format!(
-        "Jira ticket {}: {}\n{}\n\nYou are the {} agent of the workflow \"{}\", run by Sprocket. Your step: {}.\n",
-        run.ticket_key,
-        run.ticket_title,
-        run.ticket_url,
+        "{}\n\nYou are the {} agent of the workflow \"{}\", run by Sprocket. Your step: {}.\n",
+        run.heading(),
         step.agent.as_deref().unwrap_or("assigned"),
         run.wf.name,
         label(&step.id, scope),
@@ -388,7 +402,7 @@ fn compose_prompt(conn: &Connection, run: &RunRow, step: &Step, scope: &str, fee
     if let Some(request) = &run.request {
         prompt.push_str(&format!("\n## What was asked\n\n{request}\n"));
     }
-    if has_mcp {
+    if has_mcp && run.has_ticket() {
         prompt.push_str("Read the ticket (description, comments, linked issues) with your Jira tools when you need its details.\n");
     }
     let asker = run.wf.agents.iter().find(|a| Some(a.id.as_str()) == step.agent.as_deref());
@@ -469,6 +483,10 @@ fn start_step(conn: &Connection, run: &RunRow, step: &Step, scope: &str, feedbac
         return Ok(Status::Interrupted);
     }
     let job_id = insert_job(conn, &run.id, scope, &step.id, kind, "running")?;
+    let on_ticket = step.action.as_ref().is_some_and(|a| matches!(a.kind, ActionKind::Comment | ActionKind::Status));
+    if on_ticket && !run.has_ticket() {
+        return fail_job(conn, &run.id, &job_id, "This run has no Jira ticket to comment on or move");
+    }
     let agent = agent_spec(&run.wf, step.agent.as_deref().unwrap_or_default())?;
     let cwd = run.folder.clone();
     let output_schema = step.output_schema();
@@ -554,6 +572,28 @@ fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out
             };
             block(conn, run, if branch == "then" { &step.then } else { &step.otherwise }, scope, out)
         }
+        StepKind::Switch => {
+            // The case taken: its name, or `default`
+            let taken = match job {
+                Some(j) if j.state == "done" => j.output.unwrap_or_default(),
+                Some(j) => return Ok(status_of(&j.state)),
+                None => {
+                    let job_id = insert_job(conn, &run.id, scope, &step.id, "switch", "running")?;
+                    match expr::parse(step.switch.as_deref().unwrap_or_default()).and_then(|e| pick_case(step, &evaluate(conn, run, scope, &e))) {
+                        Ok(taken) => {
+                            end_job(conn, &job_id, Ended { output: Some(&taken), ..Ended::new("done") })?;
+                            activity(conn, &run.id, Some(&job_id), "switch.decided", &format!("{}: {taken}", label(&step.id, scope)))?;
+                            taken
+                        }
+                        Err(why) => return fail_job(conn, &run.id, &job_id, &why),
+                    }
+                }
+            };
+            match step.cases.iter().position(|c| *c == taken) {
+                Some(i) => block(conn, run, &step.branches[i], scope, out),
+                None => block(conn, run, &step.otherwise, scope, out),
+            }
+        }
         StepKind::ForEach => for_each(conn, run, step, scope, job, out),
         // No job of its own: its state is its branches'. Every branch is driven, so all of them start
         StepKind::Parallel => {
@@ -564,6 +604,21 @@ fn node(conn: &Connection, run: &RunRow, step: &Step, scope: &str, out: &mut Out
             Ok([Status::Busy, Status::Interrupted, Status::Failed].into_iter().find(|s| statuses.contains(s)).unwrap_or(Status::Done))
         }
     }
+}
+
+/// The switch's case for this value, compared as text, ignoring case and spaces around: `bug` matches "Bug " and
+/// `2` the number 2. No case: `default` when the switch has steps there, else the step fails.
+fn pick_case(step: &Step, value: &Value) -> std::result::Result<String, String> {
+    let text = expr::to_text(value);
+    let text = text.trim();
+    if let Some(case) = step.cases.iter().find(|c| c.trim().eq_ignore_ascii_case(text)) {
+        return Ok(case.clone());
+    }
+    if !step.otherwise.is_empty() {
+        return Ok("default".into());
+    }
+    let cases = step.cases.join(", ");
+    Err(if text.is_empty() { format!("The switch got no value, and has no default (cases: {cases})") } else { format!("No case for \"{text}\", and no default (cases: {cases})") })
 }
 
 /// A loop: its items go through its steps, `parallel` at a time; it ends when they all have.
@@ -640,7 +695,7 @@ fn for_each(conn: &Connection, run: &RunRow, step: &Step, scope: &str, job: Opti
     for i in 0..count {
         let s = item_scope(scope, &step.id, i);
         let mut value = Value::Null;
-        for inner in step.steps.iter().rev().filter(|s| s.kind != StepKind::Condition) {
+        for inner in step.steps.iter().rev().filter(|s| !matches!(s.kind, StepKind::Condition | StepKind::Switch)) {
             if let Some(j) = current(conn, &run.id, &s, &inner.id)? {
                 value = value_of(&j);
                 break;
@@ -671,8 +726,12 @@ fn drive_run(conn: &Connection, run_id: &str, out: &mut Out, up: bool) -> Result
         Status::Done => {
             activity(conn, &run.id, None, "run.passed", "")?;
             set_run_state(conn, &run.id, "passed")?;
+            super::triggers::after_ended(conn, &run, "passed", out)?;
         }
-        Status::Failed => set_run_state(conn, &run.id, "failed")?,
+        Status::Failed => {
+            set_run_state(conn, &run.id, "failed")?;
+            super::triggers::after_ended(conn, &run, "failed", out)?;
+        }
         Status::Interrupted => {
             expire_approvals(conn, &run.id, None, false)?;
             set_run_state(conn, &run.id, "interrupted")?;
@@ -702,6 +761,8 @@ pub struct NewRun<'a> {
     pub parent_job: Option<&'a str>,
     /// The run at the top of that chain
     pub root_run: Option<&'a str>,
+    /// For a run started after another one ended: that run
+    pub after_run: Option<&'a str>,
 }
 
 /// Writes a new run, within its workflow's limit of runs at once. It isn't driven yet.
@@ -722,8 +783,8 @@ pub fn create_run(conn: &Connection, n: NewRun) -> Result<String> {
     conn.execute(
         &format!(
             "INSERT INTO runs (id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title,
-             ticket_url, folder, started_by, state, started_at, request, parent_job, root_run)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11, ?12, ?13)"
+             ticket_url, folder, started_by, state, started_at, request, parent_job, root_run, after_run)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', {NOW}, ?11, ?12, ?13, ?14)"
         ),
         params![
             id,
@@ -738,7 +799,8 @@ pub fn create_run(conn: &Connection, n: NewRun) -> Result<String> {
             n.started_by,
             n.request,
             n.parent_job,
-            n.root_run
+            n.root_run,
+            n.after_run
         ],
     )?;
     activity(conn, &id, None, "run.started", &format!("{} #{number} by {}", wf.name, n.started_by))?;
@@ -790,6 +852,11 @@ fn target_ticket(conn: &Connection, run: &RunRow, step: &Step, scope: &str) -> s
     }
     if key == run.ticket_key {
         return Ok(own());
+    }
+    if !run.has_ticket() {
+        // No Jira link to make this one's from
+        let title = if title.is_empty() { key.to_string() } else { title.to_string() };
+        return Ok(Target { key: key.to_string(), title, url: String::new() });
     }
     Ok(Target {
         key: key.to_string(),
@@ -857,6 +924,7 @@ fn start_child(
             request: request.as_deref(),
             parent_job: Some(job_id),
             root_run: root.as_deref(),
+            after_run: None,
         },
     );
     match created {
@@ -961,7 +1029,7 @@ pub fn wake_queued(conn: &Connection, out: &mut Out) -> Result<()> {
 /// What a run gives the step that launched it: what its last step gave, as text.
 fn run_result(conn: &Connection, run_id: &str) -> Result<String> {
     let run = load_run(conn, run_id)?;
-    for step in run.wf.steps.iter().rev().filter(|s| s.kind != StepKind::Condition) {
+    for step in run.wf.steps.iter().rev().filter(|s| !matches!(s.kind, StepKind::Condition | StepKind::Switch)) {
         if let Some(j) = current(conn, run_id, "", &step.id)? {
             return Ok(expr::to_text(&value_of(&j)));
         }

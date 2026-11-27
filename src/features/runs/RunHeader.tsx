@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { api, type AppError, type Run } from '@/lib/api'
 import { stepState } from '@/lib/steps'
-import { duration, usd, when } from '@/lib/format'
+import { duration, folderName, usd, when } from '@/lib/format'
 import { StateBadge } from './StateBadge'
 import { useRunSelection } from './useRunSelection'
 
@@ -34,9 +34,11 @@ export function RunHeader({ run }: { run: Run }) {
             Cancel run
           </button>
         )}
-        <button type="button" className="ct-btn" onClick={() => void openUrl(run.ticket.url)}>
-          Open in Jira
-        </button>
+        {run.ticket?.url && (
+          <button type="button" className="ct-btn" onClick={() => void openUrl(run.ticket!.url)}>
+            Open in Jira
+          </button>
+        )}
         <button type="button" className="ct-btn" disabled={again.isPending || active} onClick={() => again.mutate()}>
           Run again
         </button>
@@ -59,17 +61,28 @@ export function RunFacts({ run }: { run: Run }) {
 
   return (
     <div className="ct-card flex flex-wrap items-center gap-x-6 gap-y-2.5 px-4 py-3 text-[13px]">
-      <span className="flex min-w-0 items-center gap-1.5">
-        <span className="text-ct-text-3">Jira</span>
-        <button
-          type="button"
-          className="inline-flex min-h-8 items-center font-semibold text-ct-text underline underline-offset-2 ct-mono hover:underline"
-          onClick={() => void openUrl(run.ticket.url)}
-        >
-          {run.ticket.key}
-        </button>
-        <span className="truncate">{run.ticket.title}</span>
-      </span>
+      {run.ticket ? (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="text-ct-text-3">Jira</span>
+          {run.ticket.url ? (
+            <button
+              type="button"
+              className="inline-flex min-h-8 items-center font-semibold text-ct-text underline underline-offset-2 ct-mono hover:underline"
+              onClick={() => void openUrl(run.ticket!.url)}
+            >
+              {run.ticket.key}
+            </button>
+          ) : (
+            <span className="font-semibold ct-mono">{run.ticket.key}</span>
+          )}
+          <span className="truncate">{run.ticket.title}</span>
+        </span>
+      ) : (
+        <span className="flex min-w-0 items-center gap-1.5" title={run.folder}>
+          <span className="text-ct-text-3">Folder</span>
+          <span className="truncate font-semibold ct-mono">{folderName(run.folder)}</span>
+        </span>
+      )}
       {facts.map(([label, value]) => (
         <span key={label}>
           <span className="text-ct-text-3">{label}</span> {value}

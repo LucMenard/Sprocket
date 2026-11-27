@@ -100,7 +100,8 @@ export function FlowGraph({
   flow: Flow
   selected?: string
   onSelect?: (id: string) => void
-  onConnect?: (from: string, to: string) => void
+  /** `port`: the dot it was dragged from, on a node with several (`FlowNode.ports`); `next` otherwise */
+  onConnect?: (from: string, to: string, port: string) => void
   /** A node dropped somewhere: where it now is, in the graph's coordinates */
   onPlace?: (id: string, at: { x: number; y: number }) => void
   /** Puts every node back where the automatic layout has it */
@@ -120,7 +121,7 @@ export function FlowGraph({
   const [view, setView] = useState<{ zoom: number; x: number; y: number } | null>(null)
   const drag = useRef<
     | { kind: 'pan'; sx: number; sy: number; x: number; y: number }
-    | { kind: 'link'; from: string }
+    | { kind: 'link'; from: string; port: string }
     | { kind: 'node'; id: string; sx: number; sy: number; moved: boolean }
     | null
   >(null)
@@ -129,7 +130,7 @@ export function FlowGraph({
   // The click that ends a drag doesn't also select
   const dragged = useRef(false)
   const [panning, setPanning] = useState(false)
-  const [linking, setLinking] = useState<{ from: string; x: number; y: number; over: string | null } | null>(null)
+  const [linking, setLinking] = useState<{ from: string; port: string; x: number; y: number; over: string | null } | null>(null)
 
   /** The whole graph in view, centred; not above 100% */
   const fit = useCallback(() => {
@@ -214,7 +215,7 @@ export function FlowGraph({
     if (d?.kind === 'pan') setView({ zoom: v.zoom, x: d.x + e.clientX - d.sx, y: d.y + e.clientY - d.sy })
     if (d?.kind === 'link') {
       const over = nodeAt(e.clientX, e.clientY)
-      setLinking({ from: d.from, ...toGraph(e.clientX, e.clientY), over: over !== d.from ? over : null })
+      setLinking({ from: d.from, port: d.port, ...toGraph(e.clientX, e.clientY), over: over !== d.from ? over : null })
     }
     if (d?.kind === 'node') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return
@@ -231,7 +232,7 @@ export function FlowGraph({
     if (d?.kind === 'link') {
       const to = nodeAt(e.clientX, e.clientY)
       setLinking(null)
-      if (to && to !== d.from) onConnect?.(d.from, to)
+      if (to && to !== d.from) onConnect?.(d.from, to, d.port)
     }
     if (d?.kind === 'node' && d.moved) {
       dragged.current = true
@@ -245,12 +246,12 @@ export function FlowGraph({
     if (e.button !== 0) return
     drag.current = { kind: 'node', id, sx: e.clientX, sy: e.clientY, moved: false }
   }
-  const startLink = (from: string) => (e: React.PointerEvent) => {
+  const startLink = (from: string, port = 'next') => (e: React.PointerEvent) => {
     e.stopPropagation()
     e.preventDefault()
     viewport.current?.setPointerCapture(e.pointerId)
-    drag.current = { kind: 'link', from }
-    setLinking({ from, ...toGraph(e.clientX, e.clientY), over: null })
+    drag.current = { kind: 'link', from, port }
+    setLinking({ from, port, ...toGraph(e.clientX, e.clientY), over: null })
   }
 
   const look = (e: FlowEdge) => {
@@ -273,6 +274,9 @@ export function FlowGraph({
     })
     .filter((d) => d !== null)
   const linkFrom = linking ? byId.get(linking.from) : undefined
+  // The dragged line starts at the dot it was dragged from
+  const fromPorts = linkFrom?.ports ?? [{ id: 'next' }]
+  const fromX = linkFrom ? linkFrom.x + (W * (Math.max(0, fromPorts.findIndex((p) => p.id === linking?.port)) + 1)) / (fromPorts.length + 1) : 0
 
   return (
     <div
@@ -327,7 +331,7 @@ export function FlowGraph({
           ))}
           {linking && linkFrom && (
             <path
-              d={`M${linkFrom.x + W / 2} ${linkFrom.y + H} C${linkFrom.x + W / 2} ${linkFrom.y + H + 60},${linking.x} ${linking.y - 60},${linking.x} ${linking.y}`}
+              d={`M${fromX} ${linkFrom.y + H} C${fromX} ${linkFrom.y + H + 60},${linking.x} ${linking.y - 60},${linking.x} ${linking.y}`}
               fill="none"
               stroke="var(--ct-accent)"
               strokeWidth={2}
@@ -404,16 +408,32 @@ export function FlowGraph({
               {mode === 'design' && (
                 <>
                   <span aria-hidden className="pointer-events-none absolute -top-1.5 left-1/2 -ml-1.5 size-2.5 rounded-full border-[1.5px]" style={{ background: 'var(--ct-surface)', borderColor: 'var(--ct-faint)' }} />
-                  {n.kind !== 'end' && onConnect && (
-                    // The out port: drag it onto another node to link them (the inspector's Links does the same by keyboard)
-                    <span
-                      aria-hidden
-                      title="Drag onto another node to link them"
-                      onPointerDown={startLink(n.id)}
-                      className="absolute -bottom-2 left-1/2 -ml-2 size-4 cursor-crosshair rounded-full border-2 hover:scale-125"
-                      style={{ background: 'var(--ct-surface)', borderColor: linking?.from === n.id ? 'var(--ct-accent)' : 'var(--ct-faint)' }}
-                    />
-                  )}
+                  {n.kind !== 'end' &&
+                    onConnect &&
+                    // The out ports: drag one onto another node to link them that way (the inspector's Links does the same by
+                    // keyboard). One per way out: a condition's yes and no, a switch's cases, a loop's body, and after it
+                    (n.ports ?? [{ id: 'next', label: '' }]).map((p, i, all) => {
+                      const active = linking?.from === n.id && linking.port === p.id
+                      return (
+                        <span
+                          key={p.id}
+                          data-port={p.id}
+                          className="absolute top-full -mt-2 flex -translate-x-1/2 flex-col items-center"
+                          style={{ left: `${((i + 1) / (all.length + 1)) * 100}%` }}
+                        >
+                          <span
+                            aria-hidden
+                            title={p.label ? `${p.label}: drag onto a node to link it this way` : 'Drag onto another node to link them'}
+                            onPointerDown={startLink(n.id, p.id)}
+                            className="size-4 cursor-crosshair rounded-full border-2 hover:scale-125"
+                            style={{ background: 'var(--ct-surface)', borderColor: active ? 'var(--ct-accent)' : 'var(--ct-faint)' }}
+                          />
+                          {p.label && (
+                            <span className="pointer-events-none mt-0.5 max-w-[64px] truncate text-[10px] leading-none font-semibold text-ct-text-3">{p.label}</span>
+                          )}
+                        </span>
+                      )
+                    })}
                 </>
               )}
             </div>

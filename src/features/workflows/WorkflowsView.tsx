@@ -6,18 +6,29 @@ import { FlowGraph, KindIcon } from '@/components/FlowGraph'
 import { designSub, edgeKey, KINDS, workflowFlow } from '@/lib/flow'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { useAgents } from '@/features/agents/useAgents'
-import { api, type AgentType, type AppError, type StepKind, type Workflow } from '@/lib/api'
+import { api, type AgentType, type AppError, type StepKind, type Workflow, type WorkflowDraft } from '@/lib/api'
 import { allSteps, findPlace } from '@/lib/steps'
 import { draftProblems, useWorkflowDraft } from './useWorkflowDraft'
 import { useWorkflows } from './useWorkflows'
 import { WorkflowInspector } from './WorkflowInspector'
 
-const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'forEach', 'approval', 'action', 'launch']
+const PALETTE: StepKind[] = ['agent', 'team', 'condition', 'switch', 'forEach', 'approval', 'action', 'launch']
 
 /**
  * Save, off while there is nothing to save or the graph isn't complete. Hovering it (or focusing it) says what
  * is missing; a disabled button can't show a tooltip, so it stays focusable and refuses the click itself.
  */
+/** The trigger node's subtitle: what starts the workflow, in a few words. */
+function triggerSub(d: WorkflowDraft): string {
+  const parts = [d.offerInTracket || d.forRequests ? 'Tracket' : 'By hand']
+  const schedules = d.triggers.filter((t) => t.schedule != null).length
+  const after = d.triggers.filter((t) => t.after != null).length
+  if (schedules) parts.push(schedules === 1 ? 'a schedule' : `${schedules} schedules`)
+  if (after) parts.push(after === 1 ? 'after a workflow' : `after ${after} workflows`)
+  if (d.triggers.some((t) => t.webhook)) parts.push('webhook')
+  return parts.join(' · ')
+}
+
 function SaveButton({ dirty, busy, blockers, onSave }: { dirty: boolean; busy: boolean; blockers: string[]; onSave: () => void }) {
   const [open, setOpen] = useState(false)
   const blocked = blockers.length > 0
@@ -80,7 +91,7 @@ export function WorkflowsView() {
         draft.steps,
         'design',
         (s) => ({ sub: designSub(s) }),
-        { trigger: { sub: 'Manual, from a ticket' }, end: { sub: 'Mark the run as passed' } },
+        { trigger: { sub: triggerSub(draft) }, end: { sub: 'Mark the run as passed' } },
         { positions: draft.layout, loose: draft.loose, cut: draft.cut, invalid: draft.extra },
       )
     : null
@@ -396,8 +407,8 @@ export function WorkflowsView() {
                 flow={flow}
                 selected={node}
                 onSelect={select}
-                onConnect={(from, to) => {
-                  const why = editing.connect(from, to)
+                onConnect={(from, to, port) => {
+                  const why = editing.connect(from, to, port)
                   setLinkError(why)
                   if (!why) select(to)
                 }}
@@ -432,6 +443,8 @@ export function WorkflowsView() {
                 node={node}
                 agents={agents}
                 launchable={workflows.filter((w) => w.id !== saved?.id).map((w) => ({ id: w.id, name: w.name, forRequests: w.forRequests }))}
+                workflowId={saved?.id ?? null}
+                dirty={editing.dirty}
                 flow={flow}
                 link={selectedEdge}
                 onSelect={select}

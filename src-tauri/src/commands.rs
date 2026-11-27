@@ -184,6 +184,24 @@ pub async fn share_agent(ctx: State<'_, Arc<Ctx>>, workflow: String, id: String)
     catalog::share_agent(&dirs(&ctx), &workflow, &id)
 }
 
+/// Run now, from the workflow editor: on a repository, with no ticket.
+#[tauri::command]
+pub async fn run_now(ctx: State<'_, Arc<Ctx>>, workflow: String, folder: String, request: Option<String>) -> Result<RunView> {
+    ctx.engine.run_now(&workflow, &folder, request.as_deref())
+}
+
+#[tauri::command]
+pub async fn trigger_statuses(ctx: State<'_, Arc<Ctx>>, workflow: String) -> Result<Vec<crate::engine::triggers::TriggerStatus>> {
+    ctx.engine.trigger_statuses(&workflow)
+}
+
+/// The next times a schedule would start a run, while it is being written.
+#[tauri::command]
+pub fn schedule_preview(expression: String) -> Result<Vec<String>> {
+    let cron = workflow::cron(expression.trim()).map_err(|e| AppError::new("invalid", e))?;
+    Ok(crate::engine::triggers::next_times(&cron, chrono::Local::now(), 3).iter().map(chrono::DateTime::to_rfc3339).collect())
+}
+
 /// Before an update is installed: the installer replaces the agent host exe, which it can't while it runs, and
 /// it ends the app without the usual quit. The agents stop; their runs show as interrupted and can be retried.
 #[tauri::command]

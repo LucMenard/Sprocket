@@ -90,8 +90,11 @@ function TracketPanel() {
       </Card>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] items-stretch gap-5 opacity-70">
-        <Card title="When to start a workflow" sub="Coming later: rules on Jira events.">
-          <p className="text-[13px] text-ct-text-3">Such as a label added, a ticket created or moved. For now runs start by hand.</p>
+        <Card title="Start a workflow on Jira events" sub="Coming later.">
+          <p className="text-[13px] text-ct-text-3">
+            Such as a label added, a ticket created or moved. Today a workflow starts from Tracket, on a schedule, after another
+            workflow, from its webhook or with Run now: see its Start node in Workflows.
+          </p>
         </Card>
         <Card title="Update the ticket when the run…" sub="Coming later: status mapping.">
           <p className="text-[13px] text-ct-text-3">Move the Jira status as the run starts, waits, passes or fails. Sprocket writes nothing to Jira yet.</p>

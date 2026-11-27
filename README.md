@@ -12,6 +12,9 @@ Windows only for now.
     available to later steps as `steps.<id>.output`, in text or as JSON fields when the step asks for them.
   - A condition takes its `yes` or its `no` branch from an expression such as
     `steps.triage.output.risky and steps.triage.output.severity == "high"`.
+  - A switch takes one of several branches: the value of its expression (`switch: steps.triage.output.kind`)
+    picks the case of that name (`cases: [{case: bug, steps: …}, …]`), compared as text without case, else its
+    `default`. With no case for the value and no default, the step fails. The steps after it read whichever ran.
   - A For each takes every item of a list through its steps, one at a time or a few in parallel, and stops or goes
     on when an item fails.
   - Parallel branches run at the same time, and the step after them waits for all of them.
@@ -26,6 +29,18 @@ Windows only for now.
     Tracket's Start working makes (`<repo>/.claude/worktrees/<KEY>`, on a branch named after the key, from origin's
     default branch), made when missing. That run then has its own row in Tracket. At the launched workflow's limit
     of runs at once, the step waits for room instead of failing.
+  - **Triggers.** Besides Tracket, a workflow starts with Run now (its Start node in Workflows, or Start a run in
+    Runs) and, by itself, from the `triggers` in its file:
+    - `schedule: 0 9 * * 1-5` (five cron fields, this computer's time) with a `folder` and an optional `request`.
+      Schedules run while Sprocket is open, in the tray too; a time missed while it was closed is skipped.
+    - `after: <workflow>` (with `when: passed`, `failed` or `ended`): when a run of that workflow ends so, this one
+      starts on its ticket and in its folder. Only runs started from outside count, and a chain that would come back
+      to a workflow stops there.
+    - `webhook: true` with a `folder`: a `POST /v1/workflows/<id>/start` on the local API, with the API token, starts
+      it; the body `{"request": "…"}` is optional. The folder is always the trigger's, never the caller's.
+
+    A run from a schedule, a webhook or Run now may have no Jira ticket: it works in the repository folder itself
+    (not a worktree), Tracket doesn't list it, and a comment or status action on the ticket fails.
   - An approval step waits until someone approves it. Rejecting it can send the run back to an earlier step
     (`onReject`), with the reason passed to the agent.
   - An agent whose policy asks before a tool call waits for an answer. The answer goes back to the agent.

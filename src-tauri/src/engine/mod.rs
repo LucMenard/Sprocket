@@ -11,6 +11,7 @@ mod board;
 mod colleagues;
 mod team;
 mod steps;
+pub mod triggers;
 mod views;
 #[cfg(test)]
 mod tests;
@@ -23,10 +24,13 @@ use serde::Deserialize;
 use crate::db::{Db, NOW};
 use crate::error::{AppError, Result};
 use crate::host::protocol::{Behavior, CoreMessage, HostMessage};
-use crate::workflow;
+use crate::workflow::{self, Workflow};
 use steps::{load_run, Ended, Out};
 pub use board::NoteView;
 pub use views::{ActivityView, McpServers, RunView, TicketRef};
+
+/// The longest request a webhook may send: it becomes part of agents' prompts.
+const MAX_HOOK_REQUEST: usize = 20_000;
 
 /// Where the engine's effects go: the agent host, and the UI that shows runs.
 pub trait Sink: Send + Sync {
@@ -47,8 +51,10 @@ pub enum HostEvent {
 #[serde(rename_all = "camelCase")]
 pub struct StartRun {
     pub workflow: String,
-    pub ticket: TicketRef,
-    /// The ticket's worktree, made by Tracket
+    /// None: a run on the folder, with no Jira ticket
+    #[serde(default)]
+    pub ticket: Option<TicketRef>,
+    /// The ticket's worktree, made by Tracket; the repository, for a run with no ticket
     pub folder: String,
     pub started_by: String,
     /// What someone asked for in words (Tracket's "Ask an agent"); its steps read it as `{{ request }}`
@@ -123,33 +129,106 @@ impl Engine {
     /// Starts a workflow on a ticket. `req.folder` comes from the local API and becomes the agents' working
     /// directory: only a git working tree on this computer is accepted, as resolved by `worktree_folder`.
     pub fn start_run(&self, req: StartRun) -> Result<RunView> {
-        if !valid_issue_key(&req.ticket.key) {
-            return Err(AppError::new("invalid", "The ticket key must look like ABC-123"));
-        }
-        let folder = worktree_folder(&req.folder)?;
-        let wf = workflow::load_all(&self.workflows_dir)?
+        let wf = self.workflow(&req.workflow)?;
+        self.start_workflow(&wf, req.ticket.as_ref(), &req.folder, &req.started_by, req.request.as_deref())
+    }
+
+    fn workflow(&self, id: &str) -> Result<Workflow> {
+        workflow::load_all(&self.workflows_dir)?
             .workflows
             .into_iter()
-            .find(|w| w.id == req.workflow)
-            .ok_or_else(|| AppError::new("notFound", format!("No workflow `{}`", req.workflow)))?;
+            .find(|w| w.id == id)
+            .ok_or_else(|| AppError::new("notFound", format!("No workflow `{id}`")))
+    }
 
-        let request = req.request.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
+    /// Run now, from Sprocket: on a repository, with no ticket.
+    pub fn run_now(&self, workflow: &str, folder: &str, request: Option<&str>) -> Result<RunView> {
+        let wf = self.workflow(workflow)?;
+        self.start_workflow(&wf, None, folder, "You, in Sprocket", request)
+    }
+
+    /// A webhook call: only a workflow with a webhook trigger, in that trigger's folder (never one the caller names).
+    pub fn start_from_webhook(&self, workflow: &str, request: Option<&str>, ticket: Option<&TicketRef>) -> Result<RunView> {
+        let wf = self.workflow(workflow)?;
+        let trigger = wf
+            .triggers
+            .iter()
+            .find(|t| t.webhook)
+            .ok_or_else(|| AppError::new("notFound", format!("{} has no webhook trigger", wf.name)))?;
+        if request.is_some_and(|r| r.chars().count() > MAX_HOOK_REQUEST) {
+            return Err(AppError::new("invalid", format!("The request is longer than {MAX_HOOK_REQUEST} characters")));
+        }
+        let folder = trigger.folder.clone().unwrap_or_default();
+        let request = request.map(str::to_string).or_else(|| trigger.request.clone());
+        self.start_workflow(&wf, ticket, &folder, "Webhook", request.as_deref())
+    }
+
+    /// Starts each schedule whose time has come: called every few seconds, with the time now.
+    pub fn tick_schedules(&self, now: chrono::DateTime<chrono::Local>) -> Result<()> {
+        for wf in workflow::load_all(&self.workflows_dir)?.workflows {
+            for t in wf.triggers.iter().filter(|t| t.schedule.is_some()) {
+                let Ok(cron) = workflow::cron(t.schedule.as_deref().unwrap_or_default()) else { continue };
+                let key = triggers::mark_key(t);
+                let last = {
+                    let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
+                    triggers::last_looked(&conn, &wf.id, &key)?
+                };
+                let due = triggers::due(&cron, last, now);
+                let started = (due == triggers::Due::Start).then(|| {
+                    self.start_workflow(&wf, None, t.folder.as_deref().unwrap_or_default(), "Schedule", t.request.as_deref())
+                });
+                if due == triggers::Due::No && last.is_some() {
+                    continue;
+                }
+                let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
+                let result = started.as_ref().map(|r| r.as_ref().map(|run| run.id.as_str()).map_err(|e| e.message.as_str()));
+                triggers::mark(&conn, &wf.id, &key, now, result)?;
+                drop(conn);
+                if let Some(Err(e)) = &started {
+                    log::warn!("The schedule of {} started nothing: {}", wf.name, e.message);
+                    self.sink.changed();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The workflow's triggers: when schedules run next, and what each last started.
+    pub fn trigger_statuses(&self, workflow: &str) -> Result<Vec<triggers::TriggerStatus>> {
+        let wf = self.workflow(workflow)?;
+        let conn = self.db.0.lock().unwrap_or_else(|e| e.into_inner());
+        triggers::statuses(&conn, &wf, chrono::Local::now())
+    }
+
+    /// Starts `wf` on `ticket` (or on the folder alone), in `folder`, which must be a git working tree on this
+    /// computer (`worktree_folder`): it becomes the agents' working directory.
+    fn start_workflow(&self, wf: &Workflow, ticket: Option<&TicketRef>, folder: &str, started_by: &str, request: Option<&str>) -> Result<RunView> {
+        if let Some(t) = ticket {
+            if !valid_issue_key(&t.key) {
+                return Err(AppError::new("invalid", "The ticket key must look like ABC-123"));
+            }
+        }
+        let folder = worktree_folder(folder)?;
+        let request = request.map(str::trim).filter(|r| !r.is_empty()).map(str::to_string);
         if wf.for_requests && request.is_none() {
             return Err(AppError::new("invalid", format!("{} runs what you ask: say what you want done", wf.name)));
         }
+        let none = TicketRef { key: String::new(), title: String::new(), url: String::new() };
+        let ticket = ticket.unwrap_or(&none);
         let run_id = self.change(|conn, out| {
             let id = steps::create_run(
                 conn,
                 steps::NewRun {
-                    wf: &wf,
-                    ticket_key: &req.ticket.key,
-                    ticket_title: &req.ticket.title,
-                    ticket_url: &req.ticket.url,
+                    wf,
+                    ticket_key: &ticket.key,
+                    ticket_title: &ticket.title,
+                    ticket_url: &ticket.url,
                     folder: &folder,
-                    started_by: &req.started_by,
+                    started_by,
                     request: request.as_deref(),
                     parent_job: None,
                     root_run: None,
+                    after_run: None,
                 },
             )?;
             steps::drive(conn, &id, out)?;

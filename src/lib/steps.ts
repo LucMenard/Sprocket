@@ -68,6 +68,10 @@ export function readable(steps: WorkflowStep[], id: string): { steps: WorkflowSt
       } else if (s.kind === 'forEach') {
         walk(s.steps, { steps: [...vis.steps], items: [...vis.items, s.as || 'item'] })
         vis = { ...vis, steps: [...vis.steps, s] }
+      } else if (s.kind === 'switch') {
+        // One case runs; the steps after read them all (null when not taken)
+        const lanes = [...s.branches, s.else].map((b) => walk(b, { steps: [...vis.steps], items: vis.items }))
+        vis = { steps: [...new Set(lanes.flatMap((l) => l.steps))], items: vis.items }
       } else if (s.kind === 'parallel') {
         // A branch can't read another one; the steps after the group read them all
         const lanes = s.branches.map((b) => walk(b, { steps: [...vis.steps], items: vis.items }))
@@ -104,6 +108,8 @@ export function emptyStep(id: string, kind: StepKind): WorkflowStep {
     team: null,
     launch: null,
     ticket: null,
+    switch: null,
+    cases: [],
   }
 }
 

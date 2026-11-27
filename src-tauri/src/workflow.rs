@@ -54,6 +54,98 @@ pub struct FileWorkflow {
     /// Only the editor reads it; the others are laid out automatically
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<String, Point>,
+    /// What else starts it, besides Tracket and Run now in Sprocket
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<Trigger>,
+}
+
+/// After another workflow's run: which ends start this one.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AfterWhen {
+    /// It passed
+    #[default]
+    Passed,
+    /// It failed (a cancelled or interrupted run doesn't count)
+    Failed,
+    /// It passed or failed
+    Ended,
+}
+
+/// Something that starts the workflow by itself. Exactly one of `schedule`, `after` and `webhook`; the same in the
+/// file and once checked.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Trigger {
+    /// When: five cron fields (minute hour day month weekday), in this computer's time
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// Another workflow (its id): a run of it that ends as `when` says starts this one, on the same ticket and folder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<AfterWhen>,
+    /// Started by a POST to `/v1/workflows/<id>/start` on the local API, with the API token
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub webhook: bool,
+    /// The repository the run works in (a schedule or a webhook): it has no Jira ticket
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// What the run is asked (`{{ request }}`); after another workflow, that run's request when left out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+}
+
+/// A schedule's cron expression, read.
+pub fn cron(expression: &str) -> Result<croner::Cron, String> {
+    if expression.split_whitespace().count() != 5 {
+        return Err(format!("The schedule \"{expression}\" needs five fields: minute hour day month weekday"));
+    }
+    croner::Cron::new(expression).parse().map_err(|e| format!("The schedule \"{expression}\" can't be read: {e}"))
+}
+
+/// Checks a trigger and tidies it (trimmed, empty text left out).
+fn check_trigger(workflow: &str, for_requests: bool, t: &Trigger) -> Result<Trigger, String> {
+    let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let t = Trigger {
+        schedule: text(&t.schedule),
+        after: text(&t.after),
+        when: t.when,
+        webhook: t.webhook,
+        folder: text(&t.folder),
+        request: text(&t.request),
+    };
+    let kinds = [t.schedule.is_some(), t.after.is_some(), t.webhook].iter().filter(|k| **k).count();
+    if kinds != 1 {
+        return Err("A trigger has one of `schedule`, `after` or `webhook`".into());
+    }
+    if let Some(expression) = &t.schedule {
+        cron(expression)?;
+    }
+    if let Some(after) = &t.after {
+        if !agent::valid_id(after) {
+            return Err(format!("`after: {after}` isn't a workflow id"));
+        }
+        if after == workflow {
+            return Err("A workflow can't start after itself".into());
+        }
+        if t.folder.is_some() {
+            return Err("After another workflow, the run works in that run's folder: leave out `folder`".into());
+        }
+    } else {
+        if t.when.is_some() {
+            return Err("`when` goes with `after`".into());
+        }
+        match &t.folder {
+            None => return Err("A schedule or a webhook needs the `folder` its runs work in".into()),
+            Some(f) if !Path::new(f).is_absolute() => return Err(format!("The folder \"{f}\" must be a full path")),
+            _ => {}
+        }
+    }
+    if for_requests && t.schedule.is_some() && t.request.is_none() {
+        return Err("This workflow runs what it is asked: give its schedule a `request`".into());
+    }
+    Ok(t)
 }
 
 /// A team step as written.
@@ -198,6 +290,13 @@ pub struct FileStep {
     pub branches: Option<Vec<Vec<FileStep>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<FileTeam>,
+    /// A switch: the expression whose value picks one of `cases` (by its name), else `default`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cases: Option<Vec<FileCase>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Vec<FileStep>>,
     /// Another workflow to run on the same ticket, by its file name; `input` becomes its request
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<String>,
@@ -219,6 +318,14 @@ pub struct FileStep {
 pub struct FileApproval {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+}
+
+/// One case of a switch: the value it matches, as text, and its steps.
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FileCase {
+    pub case: String,
+    pub steps: Vec<FileStep>,
 }
 
 /// The type of one field of an agent's JSON output.
@@ -290,6 +397,8 @@ pub enum StepKind {
     Team,
     /// Another workflow, run on the same ticket; the step ends when that run does
     Launch,
+    /// One branch out of several, picked by a value
+    Switch,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -349,6 +458,11 @@ pub struct Step {
     /// A launch step's ticket, a template: `{{ subtask }}`; none: the run's own ticket
     #[serde(default)]
     pub ticket: Option<String>,
+    /// A switch's expression; its cases are `cases` (the values) with `branches` (their steps), its default `else`
+    #[serde(default)]
+    pub switch: Option<String>,
+    #[serde(default)]
+    pub cases: Vec<String>,
 }
 
 impl Step {
@@ -429,6 +543,17 @@ impl Step {
                     minutes: Some(t.limits.minutes),
                 });
             }
+            StepKind::Switch => {
+                f.switch = text(&self.switch);
+                f.cases = Some(
+                    self.cases
+                        .iter()
+                        .zip(&self.branches)
+                        .map(|(case, b)| FileCase { case: case.trim().to_string(), steps: b.iter().map(Step::to_file).collect() })
+                        .collect(),
+                );
+                f.default = Some(self.otherwise.iter().map(Step::to_file).collect()).filter(|d: &Vec<FileStep>| !d.is_empty());
+            }
             StepKind::Launch => {
                 f.launch = text(&self.launch);
                 f.ticket = text(&self.ticket);
@@ -477,6 +602,9 @@ pub struct Workflow {
     /// The most a team step may use
     #[serde(default)]
     pub team_limits: TeamLimits,
+    /// What else starts it (older runs' snapshots: none)
+    #[serde(default)]
+    pub triggers: Vec<Trigger>,
 }
 
 impl Workflow {
@@ -649,20 +777,30 @@ impl Checker<'_> {
             s.branches.is_some(),
             s.team.is_some(),
             s.launch.is_some(),
+            s.switch.is_some(),
         ];
-        let kind = match kinds {
-            [false, false, false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
-            [true, false, false, false, false, false, false] => StepKind::Approval,
-            [false, true, false, false, false, false, false] => StepKind::Action,
-            [false, false, true, false, false, false, false] => StepKind::Condition,
-            [false, false, false, true, false, false, false] => StepKind::ForEach,
-            [false, false, false, false, true, false, false] => StepKind::Parallel,
-            [false, false, false, false, false, true, false] => StepKind::Team,
-            [false, false, false, false, false, false, true] => StepKind::Launch,
-            [false, false, false, false, false, false, false] => {
-                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches`, `team` or `launch`"))
+        let kind = match kinds.iter().filter(|k| **k).count() {
+            0 if s.agent.is_some() => StepKind::Agent,
+            0 => {
+                return Err(format!(
+                    "Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches`, `team`, `launch` or `switch`"
+                ))
             }
-            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches`, a `team` or a `launch`")),
+            1 => [
+                StepKind::Approval,
+                StepKind::Action,
+                StepKind::Condition,
+                StepKind::ForEach,
+                StepKind::Parallel,
+                StepKind::Team,
+                StepKind::Launch,
+                StepKind::Switch,
+            ][kinds.iter().position(|k| *k).unwrap_or_default()],
+            _ => {
+                return Err(format!(
+                    "Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches`, a `team`, a `launch` or a `switch`"
+                ))
+            }
         };
         // Fields that belong to another kind of step are a mistake, not something to ignore
         let stray = [
@@ -681,6 +819,8 @@ impl Checker<'_> {
             ("team", s.team.is_some() && kind != StepKind::Team),
             ("launch", s.launch.is_some() && kind != StepKind::Launch),
             ("ticket", s.ticket.is_some() && kind != StepKind::Launch),
+            ("cases", s.cases.is_some() && kind != StepKind::Switch),
+            ("default", s.default.is_some() && kind != StepKind::Switch),
         ];
         if let Some((field, _)) = stray.iter().find(|(_, bad)| *bad) {
             return Err(format!("Step `{id}`: `{field}` doesn't belong on this kind of step"));
@@ -707,6 +847,8 @@ impl Checker<'_> {
             team: None,
             launch: None,
             ticket: None,
+            switch: None,
+            cases: Vec::new(),
         };
         let mut gives: Option<Vec<String>> = None;
         match kind {
@@ -834,6 +976,38 @@ impl Checker<'_> {
                 *vis = after;
                 return Ok(step);
             }
+            StepKind::Switch => {
+                vis.check(s.switch.as_deref().unwrap_or_default(), &at("switch"))?;
+                let cases = s.cases.unwrap_or_default();
+                if cases.is_empty() {
+                    return Err(format!("Step `{id}`: a switch needs `cases`"));
+                }
+                // Each branch reads what came before; the steps after read all of them (null when not taken)
+                let mut after = vis.clone();
+                for (i, c) in cases.into_iter().enumerate() {
+                    let name = c.case.trim().to_string();
+                    if name.is_empty() {
+                        return Err(format!("Step `{id}`: case {} has no value to match", i + 1));
+                    }
+                    // Values are matched ignoring case, so `Bug` after `bug` could never be taken
+                    if name.eq_ignore_ascii_case("default") {
+                        return Err(format!("Step `{id}`: a case can't be called `default`: put those steps under `default`"));
+                    }
+                    if step.cases.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+                        return Err(format!("Step `{id}`: the case `{name}` is there twice (cases are matched ignoring case)"));
+                    }
+                    let mut lane_vis = vis.clone();
+                    step.branches.push(self.block(c.steps, &mut lane_vis)?);
+                    step.cases.push(name);
+                    after.steps.extend(lane_vis.steps);
+                }
+                let mut default_vis = vis.clone();
+                step.otherwise = self.block(s.default.unwrap_or_default(), &mut default_vis)?;
+                after.steps.extend(default_vis.steps);
+                step.switch = s.switch.clone();
+                *vis = after;
+                return Ok(step);
+            }
             StepKind::Launch => {
                 let target = s.launch.as_deref().unwrap_or_default().trim();
                 if !agent::valid_id(target) {
@@ -918,6 +1092,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
     if !(1..=MAX_ASKS).contains(&max_asks) {
         return Err(format!("`colleagues.maxAsks` is from 1 to {MAX_ASKS}"));
     }
+    let triggers = w.triggers.iter().map(|t| check_trigger(id, w.for_requests, t)).collect::<Result<Vec<_>, _>>()?;
     let used = checker.used;
     Ok(Workflow {
         id: id.to_string(),
@@ -932,6 +1107,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         // Positions of steps that no longer exist are dropped
         colleagues: Colleagues { can_ask, max_asks },
         team_limits,
+        triggers,
         layout: w.layout.into_iter().filter(|(k, _)| k == "$trigger" || k == "$end" || checker_seen(&steps, k)).collect(),
         steps,
     })
@@ -1114,6 +1290,7 @@ steps:
             layout: BTreeMap::new(),
             colleagues: None,
             team_limits: None,
+            triggers: Vec::new(),
         };
         let again = parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap();
         assert_eq!(serde_json::to_value(&again.steps).unwrap(), serde_json::to_value(&w.steps).unwrap());
@@ -1182,6 +1359,45 @@ steps:
 ";
 
     #[test]
+    fn reads_a_switch_and_writes_it_back() {
+        let yaml = "name: S
+steps:
+- id: triage
+  agent: planner
+  output: { kind: text }
+- id: route
+  switch: steps.triage.output.kind
+  cases:
+  - case: bug
+    steps:
+    - id: fix
+      agent: builder
+  - case: feature
+    steps:
+    - id: build
+      agent: builder
+  default:
+  - id: ask
+    agent: planner
+- id: after
+  agent: planner
+  input: steps.fix.output
+";
+        let w = parse("s", "s.yaml", yaml, &shared()).unwrap();
+        let s = &w.steps[1];
+        assert_eq!((s.kind, s.cases.clone(), s.branches.len(), s.otherwise.len()), (StepKind::Switch, vec!["bug".into(), "feature".into()], 2, 1));
+        assert_eq!(w.find("build").unwrap().step.id, "build");
+        let again = serde_yaml::to_string(&FileWorkflow { steps: w.steps.iter().map(Step::to_file).collect(), ..serde_yaml::from_str(yaml).unwrap() }).unwrap();
+        assert_eq!(parse("s", "s.yaml", &again, &shared()).unwrap().steps[1].cases, ["bug", "feature"]);
+
+        let err = |from: &str, to: &str| parse("s", "s.yaml", &yaml.replacen(from, to, 1), &shared()).unwrap_err();
+        assert!(err("case: feature", "case: Bug").contains("there twice"));
+        assert!(err("case: feature", "case: default").contains("`default`"));
+        assert!(err("switch: steps.triage.output.kind", "switch: steps.nope.output").contains("no earlier step `nope`"));
+        assert!(err("  default:\n", "  then:\n").contains("`then` doesn't belong"));
+    }
+
+    #[test]
     fn reads_a_launch_step_and_writes_it_back() {
         let yaml = "name: L\nsteps:\n- id: plan\n  agent: planner\n- id: go\n  launch: review-a-change\n  input: 'Check {{ steps.plan.output }}'\n";
         let w = parse("l", "l.yaml", yaml, &shared()).unwrap();
@@ -1230,5 +1446,45 @@ board: false").contains("board"));
         let second = load_all(&folder).unwrap();
         assert_eq!((second.workflows.len(), second.problems.len()), (5, 1));
         assert!(second.problems[0].file.ends_with("broken.yaml"));
+    }
+
+    #[test]
+    fn reads_triggers_checks_them_and_writes_them_back() {
+        let head = "name: T\nsteps:\n- id: go\n  agent: planner\ntriggers:\n";
+        let text = format!(
+            "{head}- schedule: ' 0 9 * * 1-5 '\n  folder: C:\\repo\n- after: build\n  when: failed\n  request: Look again\n- webhook: true\n  folder: C:\\repo\n"
+        );
+        let w = parse("t", "t.yaml", &text, &shared()).unwrap();
+        assert_eq!(w.triggers.len(), 3);
+        assert_eq!((w.triggers[0].schedule.as_deref(), w.triggers[0].folder.as_deref()), (Some("0 9 * * 1-5"), Some(r"C:\repo")));
+        assert_eq!((w.triggers[1].after.as_deref(), w.triggers[1].when), (Some("build"), Some(AfterWhen::Failed)));
+        assert!(w.triggers[2].webhook);
+        // Written back as read
+        let file = FileWorkflow {
+            name: w.name.clone(),
+            description: String::new(),
+            offer_in_tracket: false,
+            for_requests: false,
+            max_parallel_runs: 1,
+            board: true,
+            agents: BTreeMap::new(),
+            steps: w.steps.iter().map(Step::to_file).collect(),
+            layout: BTreeMap::new(),
+            colleagues: None,
+            team_limits: None,
+            triggers: w.triggers.clone(),
+        };
+        assert_eq!(parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap().triggers, w.triggers);
+
+        let bad = |trigger: &str| parse("t", "t.yaml", &format!("{head}{trigger}"), &shared()).unwrap_err();
+        assert!(bad("- schedule: 0 9 * *\n  folder: C:\\repo\n").contains("five fields"));
+        assert!(bad("- schedule: 0 9 * * *\n").contains("needs the `folder`"));
+        assert!(bad("- schedule: 0 9 * * *\n  after: x\n  folder: C:\\repo\n").contains("one of"));
+        assert!(bad("- after: t\n").contains("after itself"));
+        assert!(bad("- after: build\n  folder: C:\\repo\n").contains("leave out `folder`"));
+        assert!(bad("- webhook: true\n  folder: repo\n").contains("full path"));
+        assert!(bad("- webhook: true\n  folder: C:\\repo\n  when: passed\n").contains("`when` goes with `after`"));
+        let asks = "name: T\nforRequests: true\nsteps:\n- id: go\n  agent: planner\ntriggers:\n- schedule: 0 9 * * *\n  folder: C:\\repo\n";
+        assert!(parse("t", "t.yaml", asks, &shared()).unwrap_err().contains("give its schedule a `request`"));
     }
 }

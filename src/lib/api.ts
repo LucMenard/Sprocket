@@ -70,6 +70,8 @@ export interface WorkflowDraft {
   colleagues: Colleagues
   /** The most a team step may use */
   teamLimits: TeamLimits
+  /** What else starts it: schedules, other workflows ending, a webhook */
+  triggers: Trigger[]
   /**
    * The editor's own: chains of nodes no link reaches, after a link was deleted. Never saved: the editor won't
    * save while there are any.
@@ -91,7 +93,7 @@ export interface Point {
   y: number
 }
 
-export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch'
+export type StepKind = 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch' | 'switch'
 export type OutputType = 'text' | 'number' | 'yes/no' | 'list'
 export type ActionKind = 'comment' | 'status' | 'slack' | 'other'
 
@@ -136,6 +138,9 @@ export interface WorkflowStep {
   launch: string | null
   /** A launch step's ticket (`{{ subtask }}`, giving `SIS-301` or `SIS-301 Its title`); none: the run's own */
   ticket: string | null
+  /** A switch's expression: its value picks the case of that name (in `branches`, same order), else `else` (the default) */
+  switch: string | null
+  cases: string[]
 }
 
 export interface TeamLimits {
@@ -157,6 +162,33 @@ export interface Team {
   limits: TeamLimits
 }
 
+/** After another workflow's run: which ends start this one (null: `passed`) */
+export type AfterWhen = 'passed' | 'failed' | 'ended'
+
+/**
+ * Something that starts a workflow by itself: exactly one of `schedule` (five cron fields, this computer's time),
+ * `after` (another workflow's id) and `webhook`. A schedule or a webhook works in `folder`, with no Jira ticket.
+ */
+export interface Trigger {
+  schedule?: string | null
+  after?: string | null
+  when?: AfterWhen | null
+  webhook?: boolean
+  folder?: string | null
+  /** What the run is asked; after another workflow, that run's request when empty */
+  request?: string | null
+}
+
+/** A trigger as it went: a schedule's next times, and what its last try started. */
+export interface TriggerStatus {
+  next: string[]
+  triedAt: string | null
+  runId: string | null
+  runNumber: number | null
+  runState: RunState | null
+  error: string | null
+}
+
 export interface Workflow {
   id: string
   name: string
@@ -168,6 +200,7 @@ export interface Workflow {
   layout: Record<string, Point>
   colleagues: Colleagues
   teamLimits: TeamLimits
+  triggers: Trigger[]
   file: string
   agents: AgentType[]
   steps: WorkflowStep[]
@@ -198,7 +231,7 @@ export interface Job {
   id: string
   stepId: string
   /** `ask`: another agent type answering a question a step asked (its `parentJob`) */
-  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member' | 'launch'
+  kind: 'agent' | 'approval' | 'action' | 'condition' | 'loop' | 'ask' | 'team' | 'member' | 'launch' | 'switch'
   /** `""` in the workflow itself; `each[2]/` for the third item of the loop `each` */
   scope: string
   /** Redone since (after a rejection or a retry): history only */
@@ -265,7 +298,7 @@ export interface Run {
   workflowId: string
   workflowName: string
   number: number
-  ticket: Ticket
+  ticket: Ticket | null
   folder: string
   startedBy: string
   /** What someone asked for, on a run started from a request */
@@ -302,7 +335,7 @@ export interface Note {
 
 export interface StartRunRequest {
   workflow: string
-  ticket: Ticket
+  ticket: Ticket | null
   folder: string
   startedBy: string
   /** What you want done, for a workflow that runs requests */
@@ -344,4 +377,9 @@ export const api = {
   shareAgent: (workflow: string, id: string) => call<AgentType>('share_agent', { workflow, id }),
   /** A workflow's YAML file, in the default editor */
   openWorkflowFile: (file: string) => call<void>('open_workflow_file', { file }),
+  /** Starts a workflow on a repository, with no ticket */
+  runNow: (workflow: string, folder: string, request: string | null) => call<Run>('run_now', { workflow, folder, request }),
+  triggerStatuses: (workflow: string) => call<TriggerStatus[]>('trigger_statuses', { workflow }),
+  /** The next three times a cron expression gives, or why it can't be read */
+  schedulePreview: (expression: string) => call<string[]>('schedule_preview', { expression }),
 }

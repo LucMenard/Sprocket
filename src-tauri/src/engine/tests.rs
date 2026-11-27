@@ -74,7 +74,7 @@ impl World {
         self.engine
             .start_run(StartRun {
                 workflow: "fix-a-bug".into(),
-                ticket: TicketRef { key: "SIS-244".into(), title: "Fix it".into(), url: "https://x/browse/SIS-244".into() },
+                ticket: Some(TicketRef { key: "SIS-244".into(), title: "Fix it".into(), url: "https://x/browse/SIS-244".into() }),
                 folder: self.folder.clone(),
                 started_by: "Luc".into(),
                 request: None,
@@ -223,7 +223,7 @@ fn starting_checks_the_ticket_the_folder_and_the_limit() {
         w.engine
             .start_run(StartRun {
                 workflow: "fix-a-bug".into(),
-                ticket: TicketRef { key: key.into(), title: "t".into(), url: "u".into() },
+                ticket: Some(TicketRef { key: key.into(), title: "t".into(), url: "u".into() }),
                 folder: folder.into(),
                 started_by: "Luc".into(),
                 request: None,
@@ -252,7 +252,7 @@ fn the_worktree_folder_is_kept_resolved() {
         .engine
         .start_run(StartRun {
             workflow: "fix-a-bug".into(),
-            ticket: TicketRef { key: "SIS-9".into(), title: "t".into(), url: "u".into() },
+            ticket: Some(TicketRef { key: "SIS-9".into(), title: "t".into(), url: "u".into() }),
             folder: format!("{}/workflows/..", w.folder),
             started_by: "Luc".into(),
             request: None,
@@ -358,7 +358,7 @@ impl World {
         self.engine
             .start_run(StartRun {
                 workflow: id.into(),
-                ticket: TicketRef { key: "SIS-245".into(), title: "Many files".into(), url: "u".into() },
+                ticket: Some(TicketRef { key: "SIS-245".into(), title: "Many files".into(), url: "u".into() }),
                 folder: self.folder.clone(),
                 started_by: "Luc".into(),
                 request: None,
@@ -963,7 +963,7 @@ fn a_request_reaches_the_prompts_and_templates_and_is_required() {
     let start = |request: Option<&str>| {
         w.engine.start_run(StartRun {
             workflow: "ask-an-agent".into(),
-            ticket: TicketRef { key: "SIS-7".into(), title: "Slow page".into(), url: "u".into() },
+            ticket: Some(TicketRef { key: "SIS-7".into(), title: "Slow page".into(), url: "u".into() }),
             folder: w.folder.clone(),
             started_by: "Luc".into(),
             request: request.map(String::from),
@@ -984,7 +984,7 @@ fn a_request_reaches_the_prompts_and_templates_and_is_required() {
     w.with("echo", "name: Echo\nforRequests: true\nsteps:\n- id: say\n  agent: builder\n  instructions: 'Do: {{ request }}'\n");
     let run = w.engine.start_run(StartRun {
         workflow: "echo".into(),
-        ticket: TicketRef { key: "SIS-8".into(), title: "t".into(), url: "u".into() },
+        ticket: Some(TicketRef { key: "SIS-8".into(), title: "t".into(), url: "u".into() }),
         folder: w.folder.clone(),
         started_by: "Luc".into(),
         request: Some("rename foo".into()),
@@ -1059,7 +1059,7 @@ fn live_team() {
     let run = engine
         .start_run(StartRun {
             workflow: "pair".into(),
-            ticket: TicketRef { key: "SIS-1".into(), title: "Live team".into(), url: "u".into() },
+            ticket: Some(TicketRef { key: "SIS-1".into(), title: "Live team".into(), url: "u".into() }),
             folder: dir.path().display().to_string(),
             started_by: "test".into(),
             request: None,
@@ -1132,7 +1132,7 @@ fn a_launch_step_runs_another_workflow_on_the_ticket_and_gets_its_result() {
     let (run, child, work) = w.launched();
     let (_, prompt) = w.last_start();
     assert!(prompt.contains("Work on: Do the thing") && prompt.contains("## What was asked\n\nDo the thing"));
-    assert_eq!((child.workflow_id.as_str(), child.state.as_str(), child.ticket.key.as_str()), ("inner", "running", "SIS-245"));
+    assert_eq!((child.workflow_id.as_str(), child.state.as_str(), child.ticket.as_ref().unwrap().key.as_str()), ("inner", "running", "SIS-245"));
     assert_eq!((child.parent_run.as_deref(), child.started_by.as_str()), (Some(run.id.as_str()), "Outer #1"));
     assert_eq!(w.launch_job(&run.id).state, "running");
 
@@ -1237,7 +1237,7 @@ impl World {
         self.engine
             .start_run(StartRun {
                 workflow: id.into(),
-                ticket: TicketRef { key: "SIS-300".into(), title: "The story".into(), url: "https://x/browse/SIS-300".into() },
+                ticket: Some(TicketRef { key: "SIS-300".into(), title: "The story".into(), url: "https://x/browse/SIS-300".into() }),
                 folder: folder.into(),
                 started_by: "Luc".into(),
                 request: None,
@@ -1273,12 +1273,12 @@ fn a_launch_step_on_another_ticket_runs_in_that_tickets_worktree() {
     w.end_with(&list, json!({"subtasks": ["SIS-301 Add the field", "SIS-302"]}));
 
     let runs = w.engine.runs(None).unwrap();
-    let sub = runs.iter().find(|r| r.ticket.key == "SIS-301").expect("a run on SIS-301");
-    assert_eq!((sub.ticket.title.as_str(), sub.ticket.url.as_str()), ("Add the field", "https://x/browse/SIS-301"));
+    let sub = runs.iter().find(|r| r.ticket.as_ref().unwrap().key == "SIS-301").expect("a run on SIS-301");
+    assert_eq!((sub.ticket.as_ref().unwrap().title.as_str(), sub.ticket.as_ref().unwrap().url.as_str()), ("Add the field", "https://x/browse/SIS-301"));
     assert!(std::path::Path::new(&sub.folder).ends_with(std::path::Path::new(".claude/worktrees/SIS-301")));
     assert_eq!(sub.request.as_deref(), Some("Do SIS-301 Add the field"));
-    let other = runs.iter().find(|r| r.ticket.key == "SIS-302").unwrap();
-    assert_eq!(other.ticket.title, "SIS-302");
+    let other = runs.iter().find(|r| r.ticket.as_ref().unwrap().key == "SIS-302").unwrap();
+    assert_eq!(other.ticket.as_ref().unwrap().title, "SIS-302");
 
     // Each subtask is its own row in Tracket, besides the story's
     let mut keys: Vec<_> = w.engine.tickets().unwrap().into_iter().map(|t| t.ticket_key).collect();
@@ -1338,4 +1338,238 @@ fn a_launch_step_waits_for_room_at_its_workflows_limit() {
     w.engine.cancel_run(&run.id, "Luc").unwrap();
     let states: Vec<_> = w.run(&run.id).jobs.iter().filter(|j| j.kind == "launch").map(|j| j.state.clone()).collect();
     assert_eq!(states, ["stopped", "stopped"]);
+}
+
+// ---- Triggers, and runs with no ticket ----
+
+const NIGHTLY: &str = "name: Nightly
+triggers:
+- schedule: 0 2 * * *
+  folder: FOLDER
+  request: Check the dependencies
+steps:
+- id: check
+  agent: planner
+- id: tell
+  agent: notifier
+  action:
+    do: comment
+    text: Done
+";
+
+const FOLLOW: &str = "name: Follow
+triggers:
+- after: fix-a-bug
+  when: ended
+- webhook: true
+  folder: FOLDER
+steps:
+- id: look
+  agent: planner
+";
+
+impl World {
+    fn write(&self, id: &str, text: &str) {
+        // A plain YAML scalar keeps its backslashes
+        let text = text.replace("FOLDER", &self.folder);
+        std::fs::write(std::path::Path::new(&self.folder).join("workflows").join(format!("{id}.yaml")), text).unwrap();
+    }
+
+    fn runs_of(&self, workflow: &str) -> Vec<RunView> {
+        self.engine.runs(None).unwrap().into_iter().filter(|r| r.workflow_id == workflow).collect()
+    }
+}
+
+fn local(h: u32, m: u32, s: u32) -> chrono::DateTime<chrono::Local> {
+    use chrono::TimeZone;
+    chrono::Local.with_ymd_and_hms(2026, 11, 27, h, m, s).unwrap()
+}
+
+#[test]
+fn a_schedule_starts_a_run_on_its_folder_once_with_no_ticket() {
+    let w = world();
+    w.write("nightly", NIGHTLY);
+    // First look: it counts from now
+    w.engine.tick_schedules(local(1, 59, 30)).unwrap();
+    assert!(w.runs_of("nightly").is_empty());
+    w.engine.tick_schedules(local(2, 0, 5)).unwrap();
+    w.engine.tick_schedules(local(2, 0, 20)).unwrap();
+    let runs = w.runs_of("nightly");
+    assert_eq!(runs.len(), 1, "started once");
+    let run = &runs[0];
+    assert_eq!((run.ticket.is_none(), run.started_by.as_str(), run.request.as_deref()), (true, "Schedule", Some("Check the dependencies")));
+    let (job, prompt) = w.last_start();
+    assert!(prompt.starts_with(&format!("The repository at {}. This run has no Jira ticket.", run.folder)), "{prompt}");
+    assert!(!prompt.contains("Jira ticket "));
+
+    // A comment on the ticket has nothing to go to
+    w.end(&job, "all fine");
+    let run = w.run(&run.id);
+    assert_eq!(run.state, "failed");
+    assert_eq!(run.jobs.last().unwrap().error.as_deref(), Some("This run has no Jira ticket to comment on or move"));
+    // Tracket sees no ticket for it
+    assert!(w.engine.tickets().unwrap().is_empty());
+    // The editor sees what it started, and when it runs next
+    let status = &w.engine.trigger_statuses("nightly").unwrap()[0];
+    assert_eq!((status.run_number, status.error.as_deref(), status.next.len()), (Some(1), None, 3));
+}
+
+#[test]
+fn a_schedule_missed_while_sprocket_was_closed_is_skipped_and_a_bad_folder_is_reported() {
+    let w = world();
+    w.write("nightly", NIGHTLY);
+    w.engine.tick_schedules(local(1, 0, 0)).unwrap();
+    w.engine.tick_schedules(local(9, 0, 0)).unwrap();
+    assert!(w.runs_of("nightly").is_empty(), "not caught up on");
+
+    w.write("nightly", &NIGHTLY.replace("FOLDER", "C:\\nowhere\\at-all"));
+    w.engine.tick_schedules(local(1, 0, 0)).unwrap();
+    w.engine.tick_schedules(local(2, 0, 30)).unwrap();
+    let status = &w.engine.trigger_statuses("nightly").unwrap()[0];
+    assert!(status.error.as_deref().is_some_and(|e| e.contains("doesn't exist")), "{status:?}");
+}
+
+#[test]
+fn a_workflow_set_to_run_after_another_starts_on_its_ticket_and_folder() {
+    let w = world();
+    w.write("follow", FOLLOW);
+    let run = w.start();
+    let (plan, _) = w.last_start();
+    // A failed run counts with `when: ended`
+    w.host(json!({"type": "job.ended", "jobId": plan, "result": "error", "error": "boom"}));
+    assert_eq!(w.run(&run.id).state, "failed");
+    let follow = w.runs_of("follow");
+    assert_eq!(follow.len(), 1);
+    assert_eq!(
+        (follow[0].ticket.as_ref().map(|t| t.key.as_str()), follow[0].folder.as_str(), follow[0].started_by.as_str()),
+        (Some("SIS-244"), w.run(&run.id).folder.as_str(), "After Fix a bug #1")
+    );
+    assert!(w.engine.activity(50).unwrap().iter().any(|a| a.what == "trigger.started" && a.detail.as_deref() == Some("Follow #1")));
+    // It is now the ticket's latest run
+    assert_eq!(w.engine.tickets().unwrap()[0].run_id, follow[0].id);
+
+    // Retried, the run ends again: it doesn't start a second one
+    w.engine.retry_job(&w.run(&run.id).jobs[0].id).unwrap();
+    let (plan, _) = w.last_start();
+    w.end(&plan, "1. change foo");
+    let gate = w.run(&run.id).approvals[0].id.clone();
+    w.engine.decide(&gate, true, None, "Luc").unwrap();
+    let (build, _) = w.last_start();
+    w.end(&build, "built");
+    assert_eq!((w.run(&run.id).state.as_str(), w.runs_of("follow").len()), ("passed", 1));
+}
+
+#[test]
+fn after_triggers_never_loop_and_only_follow_the_end_they_name() {
+    let w = world();
+    let one_step = |name: &str, after: &str| format!("name: {name}
+triggers:
+- after: {after}
+steps:
+- id: go
+  agent: planner
+");
+    w.write("ping", &one_step("Ping", "pong"));
+    w.write("pong", &one_step("Pong", "ping"));
+
+    // Pong follows a pass only
+    w.engine.run_now("ping", &w.folder, None).unwrap();
+    let (job, _) = w.last_start();
+    w.host(json!({"type": "job.ended", "jobId": job, "result": "error", "error": "boom"}));
+    assert!(w.runs_of("pong").is_empty());
+
+    // Ping passes, so pong runs; pong passes, and ping would run again: a loop, skipped
+    w.engine.run_now("ping", &w.folder, None).unwrap();
+    let (job, _) = w.last_start();
+    w.end(&job, "ok");
+    let pong = w.runs_of("pong");
+    assert_eq!((pong.len(), pong[0].started_by.as_str()), (1, "After Ping #2"));
+    let (job, _) = w.last_start();
+    w.end(&job, "ok");
+    assert_eq!((w.runs_of("ping").len(), w.run(&pong[0].id).state.as_str()), (2, "passed"));
+    let skipped = w.engine.activity(100).unwrap().into_iter().find(|a| a.what == "trigger.skipped").expect("skipped");
+    assert!(skipped.detail.as_deref().unwrap_or_default().starts_with("Ping: it already ran in this chain"));
+}
+
+#[test]
+fn a_webhook_starts_only_a_workflow_that_has_one_in_its_folder() {
+    let w = world();
+    w.write("follow", FOLLOW);
+    let run = w.engine.start_from_webhook("follow", Some("Look at the logs"), None).unwrap();
+    assert_eq!((run.started_by.as_str(), run.ticket.is_none(), run.request.as_deref()), ("Webhook", true, Some("Look at the logs")));
+    let e = w.engine.start_from_webhook("fix-a-bug", None, None).unwrap_err();
+    assert_eq!(e.kind, "notFound");
+    let long = "x".repeat(20_001);
+    assert_eq!(w.engine.start_from_webhook("follow", Some(&long), None).unwrap_err().kind, "invalid");
+}
+
+#[test]
+fn run_now_starts_a_run_on_a_repository_with_no_ticket() {
+    let w = world();
+    let run = w.engine.run_now("fix-a-bug", &w.folder, None).unwrap();
+    assert_eq!((run.ticket.is_none(), run.started_by.as_str()), (true, "You, in Sprocket"));
+    assert_eq!(w.engine.run_now("fix-a-bug", "relative", None).unwrap_err().kind, "invalid");
+}
+
+// ---- Switch ----
+
+const ROUTE: &str = "name: Route
+steps:
+- id: triage
+  agent: planner
+  output: { kind: text }
+- id: route
+  switch: steps.triage.output.kind
+  cases:
+  - case: bug
+    steps:
+    - id: fix
+      agent: builder
+  - case: feature
+    steps:
+    - id: build
+      agent: builder
+DEFAULT- id: after
+  agent: planner
+  input: '{{ steps.fix.output }}{{ steps.build.output }}{{ steps.other.output }}'
+";
+
+fn route(default: bool) -> String {
+    let text = ROUTE.replace("DEFAULT", if default { "  default:\n  - id: other\n    agent: builder\n" } else { "" });
+    // Without a default there is no `other` step to read
+    if default { text } else { text.replace("{{ steps.other.output }}", "") }
+}
+
+#[test]
+fn a_switch_takes_the_case_its_value_names_or_its_default() {
+    let w = world();
+    w.with("route", &route(true));
+    for (kind, step) in [("Feature ", "build"), ("bug", "fix"), ("question", "other")] {
+        let run = w.start_wf("route");
+        let (triage, _) = w.last_start();
+        w.end_with(&triage, json!({ "kind": kind }));
+        let (job, prompt) = w.last_start();
+        assert!(prompt.contains(&format!("Your step: {step}.")), "{kind}: {prompt}");
+        let taken = w.run(&run.id).jobs.into_iter().find(|j| j.kind == "switch").unwrap().output.unwrap();
+        assert_eq!(taken, if step == "other" { "default" } else { kind.trim().to_lowercase().leak() as &str });
+        w.end(&job, "done here");
+        // The step after reads whichever branch ran
+        let (after, prompt) = w.last_start();
+        assert!(prompt.contains("## Input from earlier steps\n\ndone here"));
+        w.end(&after, "ok");
+        assert_eq!(w.run(&run.id).state, "passed");
+    }
+}
+
+#[test]
+fn a_switch_with_no_case_for_its_value_and_no_default_fails() {
+    let w = world();
+    w.with("route", &route(false));
+    let run = w.start_wf("route");
+    let (triage, _) = w.last_start();
+    w.end_with(&triage, json!({ "kind": "question" }));
+    let view = w.run(&run.id);
+    assert_eq!(view.state, "failed");
+    let switch = view.jobs.iter().find(|j| j.kind == "switch").unwrap();
+    assert_eq!(switch.error.as_deref(), Some("No case for \"question\", and no default (cases: bug, feature)"));
 }

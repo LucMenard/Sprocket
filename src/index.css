@@ -84,6 +84,7 @@
     --ct-kind-parallel-bg: var(--muted); --ct-kind-parallel: var(--mfg);
     --ct-kind-team-bg: #E0E7FF; --ct-kind-team: #3730A3;
     --ct-kind-launch-bg: #FCE7F3; --ct-kind-launch: #9D174D;
+    --ct-kind-switch-bg: #EDE9FE; --ct-kind-switch: #5B21B6;
 
     --ct-wait-card-bg: var(--lit-bg); --ct-wait-card-border: var(--lit-border);
     --ct-approve: #1F7A3F;

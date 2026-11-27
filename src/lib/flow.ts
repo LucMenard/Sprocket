@@ -1,7 +1,7 @@
 import type { JobState, Point, RunState, WorkflowStep } from './api'
 import { allSteps } from './steps'
 
-export type FlowKind = 'trigger' | 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch' | 'end'
+export type FlowKind = 'trigger' | 'agent' | 'approval' | 'action' | 'condition' | 'forEach' | 'parallel' | 'team' | 'launch' | 'switch' | 'end'
 
 export interface FlowNode {
   id: string
@@ -11,12 +11,44 @@ export interface FlowNode {
   /** In a run: the state of the step's latest job; 'pending' when it hasn't started */
   state?: JobState | RunState | 'pending'
   badge?: string
-  /** In a run, for a condition: the branch it took */
-  took?: 'then' | 'else'
+  /** In a run, for a condition (`then`, `else`) or a switch (the case's name, `default`): the branch it took */
+  took?: string
   /** In the editor: no link reaches it yet */
   loose?: boolean
+  /**
+   * In the editor, a node with several ways out has a dot for each (see `portsOf`); others have one, `next`.
+   * A link dragged from a dot goes that way: into the branch, the loop's body, or after the node.
+   */
+  ports?: Port[]
   x: number
   y: number
+}
+
+/** A way out of a node: `next`, `then`, `else`, `steps` (a loop's body), `case:<n>` (a switch's case). */
+export interface Port {
+  id: string
+  label: string
+}
+
+/** The dots under a node with more than one way out. */
+export function portsOf(s: WorkflowStep): Port[] | undefined {
+  switch (s.kind) {
+    case 'condition':
+      return [
+        { id: 'then', label: 'yes' },
+        { id: 'else', label: 'no' },
+        { id: 'next', label: 'after' },
+      ]
+    case 'switch':
+      return [...s.cases.map((c, i) => ({ id: `case:${i}`, label: c || `case ${i + 1}` })), { id: 'else', label: 'default' }, { id: 'next', label: 'after' }]
+    case 'forEach':
+      return [
+        { id: 'steps', label: 'each' },
+        { id: 'next', label: 'all done' },
+      ]
+    default:
+      return undefined
+  }
 }
 
 /**
@@ -35,6 +67,8 @@ export type LinkRef =
   | { type: 'reject'; approval: string }
   | { type: 'lane'; group: string; lane: number }
   | { type: 'branch'; condition: string; branch: 'then' | 'else' }
+  /** A switch's case (its steps follow the switch instead when the link goes) */
+  | { type: 'case'; step: string; lane: number }
 
 export interface FlowEdge {
   from: string
@@ -43,8 +77,8 @@ export interface FlowEdge {
   mode: EdgeMode
   /** For `bypass`: the x the edge goes down at */
   at?: number
-  /** Leaves a condition by this branch: taken only when the condition took it */
-  via?: 'then' | 'else'
+  /** Leaves a condition or a switch by this branch: taken only when it took it */
+  via?: string
   link?: LinkRef
   /** Drawn in the editor but impossible in the workflow: it must go before saving */
   invalid?: boolean
@@ -83,6 +117,7 @@ export const KINDS: Record<FlowKind, { label: string; icon: string; help: string
   action: { label: 'Action', icon: 'M4 5h16v11H9l-5 4zM8 10h8M8 13h5', help: 'Post, comment or update a ticket' },
   team: { label: 'Team', icon: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20a6 6 0 0 1 12 0M17 11a3 3 0 1 0 0-6M21 20a6 6 0 0 0-4-5.7', help: 'Agents working on one step together' },
   launch: { label: 'Launch a workflow', icon: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', help: 'Run another workflow on the ticket and wait for it' },
+  switch: { label: 'Switch', icon: 'M5 12h5M10 12l4-6h5M10 12l4 6h5M10 12h9', help: 'Take one of several branches, by a value' },
   parallel: { label: 'Parallel branches', icon: 'M6 3v18M6 8c0 4 12 3 12 8v5', help: 'Steps that run at the same time' },
   end: { label: 'End', icon: 'M5 21V4M5 4h11l-2 4 2 4H5', help: 'Finish the run' },
 }
@@ -165,7 +200,7 @@ export function workflowFlow(
   }
 
   const node = (s: WorkflowStep, x: number, y: number): Laid => {
-    nodes.push({ id: s.id, kind: s.kind, title: s.id, x, y, ...describe(s) })
+    nodes.push({ id: s.id, kind: s.kind, title: s.id, x, y, ...(mode === 'design' ? { ports: portsOf(s) } : {}), ...describe(s) })
     right = Math.max(right, x + W)
     if (s.kind === 'condition') {
       const yesLink = s.then.length ? { type: 'branch' as const, condition: s.id, branch: 'then' as const } : undefined
@@ -177,6 +212,21 @@ export function workflowFlow(
       }
       const at = yes.right + 40
       return { exits: [...yes.exits, { from: s.id, label: 'no', mode: 'bypass', at, via: 'else' }], bottom: yes.bottom, right: at + 30 }
+    }
+    if (s.kind === 'switch') {
+      // Its cases side by side under it, then the default; the step after it follows whichever ran
+      const cases = [...s.cases.map((c, i) => ({ label: c, steps: s.branches[i] ?? [], via: c, link: { type: 'case' as const, step: s.id, lane: i } })),
+        ...(s.else.length ? [{ label: 'default', steps: s.else, via: 'default', link: { type: 'branch' as const, condition: s.id, branch: 'else' as const } }] : [])]
+      let cx = x
+      let bottom = y + H
+      const exits: Exit[] = []
+      cases.forEach((c, i) => {
+        const laid = block(c.steps, cx, y + H + GAP, [{ from: s.id, label: c.label, via: c.via, mode: i === 0 ? 'down' : 'side', link: c.steps.length ? c.link : undefined }])
+        exits.push(...laid.exits)
+        bottom = Math.max(bottom, laid.bottom)
+        cx = laid.right + COLUMN - 40
+      })
+      return { exits, bottom, right: Math.max(x + W, cx - COLUMN + 40) }
     }
     if (s.kind === 'forEach') {
       const bx = x + W + COLUMN
@@ -193,7 +243,7 @@ export function workflowFlow(
     return { exits: [{ from: s.id, label: s.kind === 'approval' ? 'approved' : undefined }], bottom: y + H, right: x + W + (back ? 70 : 0) }
   }
 
-  nodes.push({ id: '$trigger', kind: 'trigger', title: 'Tracket', x: LEFT, y: TOP, ...ends.trigger })
+  nodes.push({ id: '$trigger', kind: 'trigger', title: 'Start', x: LEFT, y: TOP, ...ends.trigger })
   const laid = block(steps, LEFT, TOP + H + GAP, [{ from: '$trigger' }])
   const endY = laid.bottom + GAP
   connect(laid.exits, '$end')
@@ -255,6 +305,8 @@ export function designSub(s: WorkflowStep): string {
       return `${s.branches.length} branches at once`
     case 'team':
       return `${s.team?.members.join(', ') ?? ''} · lead ${s.team?.lead ?? ''}`
+    case 'switch':
+      return `${s.switch ?? ''} · ${s.cases.length} case${s.cases.length === 1 ? '' : 's'}${s.else.length ? ' + default' : ''}`
     case 'launch':
       return `Runs ${s.launch ?? '(no workflow)'}${s.ticket ? ` on ${s.ticket}` : ''} and waits`
   }

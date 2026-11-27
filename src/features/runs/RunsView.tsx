@@ -4,7 +4,7 @@ import { FlowGraph } from '@/components/FlowGraph'
 import { designSub, workflowFlow, type FlowNode } from '@/lib/flow'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { type AppError, type Run, type RunState } from '@/lib/api'
-import { duration, when } from '@/lib/format'
+import { duration, when, workLabel } from '@/lib/format'
 import { currentJobs, findPlace, stepState } from '@/lib/steps'
 import { JobPanel, RunEndsPanel } from './JobPanel'
 import { RunFacts, RunHeader } from './RunHeader'
@@ -41,6 +41,10 @@ function runFlow(run: Run) {
         const took = jobs.at(-1)?.output === 'then' ? 'then' : jobs.at(-1)?.output === 'else' ? 'else' : undefined
         node.took = took
         if (took) node.sub = `Took ${took === 'then' ? 'yes' : 'no'} · ${s.if}`
+      } else if (s.kind === 'switch') {
+        const took = jobs.at(-1)?.state === 'done' ? (jobs.at(-1)?.output ?? undefined) : undefined
+        node.took = took
+        if (took) node.sub = `Took ${took} · ${s.switch}`
       } else if (s.kind === 'team') {
         const working = run.jobs.filter((j) => j.kind === 'member' && j.stepId.startsWith(`${s.id}~`) && (j.state === 'running' || j.state === 'waiting'))
         if (working.length) node.badge = `${working.length} at work`
@@ -106,7 +110,7 @@ function RunList({ runs, selected, onPick, onNew }: { runs: Run[]; selected?: st
                 <span className="text-xs text-ct-text-3 ct-mono">#{r.number}</span>
               </span>
               <span className="truncate text-xs text-ct-text-3">
-                {stateLabel(r.state)} · {r.ticket.key} · {when(r.startedAt)}
+                {stateLabel(r.state)} · {workLabel(r)} · {when(r.startedAt)}
               </span>
             </span>
             <span className="text-xs whitespace-nowrap text-ct-text-2">{duration(r.startedAt, r.endedAt)}</span>

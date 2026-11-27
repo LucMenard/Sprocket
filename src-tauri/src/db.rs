@@ -135,6 +135,20 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE runs ADD COLUMN root_run TEXT;
     CREATE INDEX runs_parent_job ON runs(parent_job);
     "#,
+    // 10: triggers. A run started after another one ended (that run); when each schedule was last looked at, and
+    // what its last try started
+    r#"
+    ALTER TABLE runs ADD COLUMN after_run TEXT;
+    CREATE TABLE trigger_marks (
+        workflow_id TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        at          TEXT NOT NULL,
+        tried_at    TEXT,
+        run_id      TEXT,
+        error       TEXT,
+        PRIMARY KEY (workflow_id, key)
+    );
+    "#,
 ];
 
 /// The time as SQLite writes it everywhere: `2026-11-25T09:30:00.123Z`.
