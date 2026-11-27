@@ -159,12 +159,15 @@ Work lands on `main`; `release` is production. Pushing to `release` is what rele
 1. To release, fast-forward `release` to `main`:
 
    ```bash
-   git push origin origin/main:release
+   git push origin origin/main:refs/heads/release
    ```
 
 2. The **Release** workflow does the rest. It gathers the changesets into `CHANGELOG.md` and raises the version in
-   `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, commits that to `release` and merges the
-   commit back into `main` (so the changesets aren't gathered twice). Then it lints and tests, builds the agent host
+   `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, commits that to `release` and opens a
+   pull request from `release` into `main` (`main` only takes pull requests). **Merge that pull request with a merge
+   commit**, not a squash, before the next release: it keeps the changesets from being gathered twice, and lets the
+   next push to `release` fast-forward. If Actions may not open pull requests (Settings → Actions → General), the job
+   fails with a link to open it by hand. Then it lints and tests, builds the agent host
    exe (`npm run host:sea`, with the workflow's Node 22 inside it) and the installer, signs the update, publishes
    `v<version>` with the changelog as its notes, and checks that the release has the installer, its signature and a
    valid `latest.json`.

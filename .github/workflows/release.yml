@@ -6,7 +6,8 @@ name: Release
 #   1. version:   the changesets are gathered into CHANGELOG.md and the version is raised in package.json,
 #                 src-tauri/tauri.conf.json and src-tauri/Cargo.toml (all three must agree). That is committed
 #                 to release.
-#   2. sync-main: that commit is merged back into main, so its changesets aren't gathered a second time.
+#   2. sync-main: a pull request from release into main is opened, to merge with a merge commit, so its changesets
+#                 aren't gathered a second time and the next push to release is a fast-forward.
 #   3. build:     the agent host exe and the installer are built, signed for the updater and published as
 #                 v<version>, with latest.json, which installed apps read to update themselves.
 #
@@ -86,31 +87,31 @@ jobs:
     if: needs.version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      pull-requests: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - name: Merge release into main
+      # main only takes pull requests (repository rules), so the version comes back through one, from release itself.
+      # Merge it with a merge commit, not a squash: the next push of main to release must be a fast-forward.
+      - name: Open a pull request from release into main
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # main may have moved while this ran: take it as it is now, merge again, and retry the push
-          for attempt in 1 2 3; do
-            git fetch origin main release
-            git reset --hard origin/main
-            if ! git merge --no-ff origin/release -m "Bring release v$VERSION back into main"; then
-              git merge --abort
-              echo "::error::release v$VERSION doesn't merge into main cleanly. Merge release into main by hand: until then the next release would gather these changesets again."
-              exit 1
-            fi
-            git push origin HEAD:main && exit 0
-          done
-          echo "::error::main keeps moving: merge release into it by hand."
-          exit 1
+          repo="$GITHUB_REPOSITORY"
+          open="$(gh pr list --repo "$repo" --base main --head release --state open --json url --jq '.[0].url')"
+          if [ -n "$open" ]; then
+            echo "::notice::Merge $open (with a merge commit) before the next release."
+            exit 0
+          fi
+          body="Brings the version commit of v$VERSION back into main, so its changesets aren't gathered a second time.
+
+          **Merge it with a merge commit** (not squash or rebase): the next release fast-forwards release to main."
+          if url="$(gh pr create --repo "$repo" --base main --head release --title "Bring release v$VERSION back into main" --body "$body")"; then
+            echo "::notice::Merge $url (with a merge commit) before the next release."
+          else
+            echo "::error::Couldn't open the pull request. Allow it in Settings > Actions > General (\"Allow GitHub Actions to create and approve pull requests\"), or open it by hand: https://github.com/$repo/compare/main...release. Until it is merged, the next release would gather these changesets again."
+            exit 1
+          fi
 
   check:
     name: Is there a version to release?
