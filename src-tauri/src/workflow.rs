@@ -198,6 +198,12 @@ pub struct FileStep {
     pub branches: Option<Vec<Vec<FileStep>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<FileTeam>,
+    /// Another workflow to run on the same ticket, by its file name; `input` becomes its request
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<String>,
+    /// For a launch step: the ticket that run works on (`SIS-301`, or `SIS-301 Its title`); the run's own when left out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,6 +288,8 @@ pub enum StepKind {
     Parallel,
     /// Agent types working on one step together
     Team,
+    /// Another workflow, run on the same ticket; the step ends when that run does
+    Launch,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -335,6 +343,12 @@ pub struct Step {
     /// A team step's members, lead, writer, goal and limits
     #[serde(default)]
     pub team: Option<Team>,
+    /// A launch step's workflow, by its id
+    #[serde(default)]
+    pub launch: Option<String>,
+    /// A launch step's ticket, a template: `{{ subtask }}`; none: the run's own ticket
+    #[serde(default)]
+    pub ticket: Option<String>,
 }
 
 impl Step {
@@ -414,6 +428,11 @@ impl Step {
                     budget_usd: Some(t.limits.budget_usd),
                     minutes: Some(t.limits.minutes),
                 });
+            }
+            StepKind::Launch => {
+                f.launch = text(&self.launch);
+                f.ticket = text(&self.ticket);
+                f.input = text(&self.input);
             }
         }
         f
@@ -577,6 +596,8 @@ impl Visible {
 }
 
 struct Checker<'a> {
+    /// The workflow's own id: it can't launch itself
+    workflow: &'a str,
     own: &'a BTreeMap<String, FileAgent>,
     shared: &'a BTreeMap<String, AgentType>,
     seen: HashSet<String>,
@@ -620,25 +641,34 @@ impl Checker<'_> {
             return Err(format!("Two steps are called `{id}`"));
         }
         let at = |field: &str| format!("Step `{id}`, {field}");
-        let kinds = [s.approval.is_some(), s.action.is_some(), s.condition.is_some(), s.for_each.is_some(), s.branches.is_some(), s.team.is_some()];
+        let kinds = [
+            s.approval.is_some(),
+            s.action.is_some(),
+            s.condition.is_some(),
+            s.for_each.is_some(),
+            s.branches.is_some(),
+            s.team.is_some(),
+            s.launch.is_some(),
+        ];
         let kind = match kinds {
-            [false, false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
-            [true, false, false, false, false, false] => StepKind::Approval,
-            [false, true, false, false, false, false] => StepKind::Action,
-            [false, false, true, false, false, false] => StepKind::Condition,
-            [false, false, false, true, false, false] => StepKind::ForEach,
-            [false, false, false, false, true, false] => StepKind::Parallel,
-            [false, false, false, false, false, true] => StepKind::Team,
-            [false, false, false, false, false, false] => {
-                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches` or `team`"))
+            [false, false, false, false, false, false, false] if s.agent.is_some() => StepKind::Agent,
+            [true, false, false, false, false, false, false] => StepKind::Approval,
+            [false, true, false, false, false, false, false] => StepKind::Action,
+            [false, false, true, false, false, false, false] => StepKind::Condition,
+            [false, false, false, true, false, false, false] => StepKind::ForEach,
+            [false, false, false, false, true, false, false] => StepKind::Parallel,
+            [false, false, false, false, false, true, false] => StepKind::Team,
+            [false, false, false, false, false, false, true] => StepKind::Launch,
+            [false, false, false, false, false, false, false] => {
+                return Err(format!("Step `{id}` needs one of `agent`, `approval`, `action`, `if`, `forEach`, `branches`, `team` or `launch`"))
             }
-            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches` or a `team`")),
+            _ => return Err(format!("Step `{id}` can be only one of an approval, an action, an `if`, a `forEach`, `branches`, a `team` or a `launch`")),
         };
         // Fields that belong to another kind of step are a mistake, not something to ignore
         let stray = [
             ("agent", s.agent.is_some() && !matches!(kind, StepKind::Agent | StepKind::Action)),
             ("instructions", s.instructions.is_some() && kind != StepKind::Agent),
-            ("input", s.input.is_some() && kind != StepKind::Agent),
+            ("input", s.input.is_some() && !matches!(kind, StepKind::Agent | StepKind::Launch)),
             ("output", s.output.is_some() && kind != StepKind::Agent),
             ("onReject", s.on_reject.is_some() && kind != StepKind::Approval),
             ("then", s.then.is_some() && kind != StepKind::Condition),
@@ -649,6 +679,8 @@ impl Checker<'_> {
             ("onItemFailure", s.on_item_failure.is_some() && kind != StepKind::ForEach),
             ("branches", s.branches.is_some() && kind != StepKind::Parallel),
             ("team", s.team.is_some() && kind != StepKind::Team),
+            ("launch", s.launch.is_some() && kind != StepKind::Launch),
+            ("ticket", s.ticket.is_some() && kind != StepKind::Launch),
         ];
         if let Some((field, _)) = stray.iter().find(|(_, bad)| *bad) {
             return Err(format!("Step `{id}`: `{field}` doesn't belong on this kind of step"));
@@ -673,6 +705,8 @@ impl Checker<'_> {
             steps: Vec::new(),
             branches: Vec::new(),
             team: None,
+            launch: None,
+            ticket: None,
         };
         let mut gives: Option<Vec<String>> = None;
         match kind {
@@ -800,6 +834,24 @@ impl Checker<'_> {
                 *vis = after;
                 return Ok(step);
             }
+            StepKind::Launch => {
+                let target = s.launch.as_deref().unwrap_or_default().trim();
+                if !agent::valid_id(target) {
+                    return Err(format!("Step `{id}`: `launch` names a workflow by its file name (lowercase letters, digits, - or _)"));
+                }
+                // A chain through other workflows is refused when it runs
+                if target == self.workflow {
+                    return Err(format!("Step `{id}`: a workflow can't launch itself"));
+                }
+                if let Some(t) = &s.input {
+                    vis.check_template(t, &at("input"))?;
+                }
+                if let Some(t) = &s.ticket {
+                    vis.check_template(t, &at("ticket"))?;
+                }
+                step.launch = Some(target.to_string());
+                step.ticket = s.ticket.clone().filter(|t| !t.trim().is_empty());
+            }
             StepKind::ForEach => {
                 vis.check(s.for_each.as_deref().unwrap_or_default(), &at("forEach"))?;
                 let item = s.item.unwrap_or_else(|| "item".into());
@@ -850,7 +902,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
     if team_limits.max_turns == 0 || team_limits.budget_usd <= 0.0 || team_limits.minutes == 0 {
         return Err("`teamLimits` are more than 0".into());
     }
-    let mut checker = Checker { own: &w.agents, shared, seen: HashSet::new(), used: Vec::new(), board: w.board, team_limits };
+    let mut checker = Checker { workflow: id, own: &w.agents, shared, seen: HashSet::new(), used: Vec::new(), board: w.board, team_limits };
     let steps = checker.block(w.steps.clone(), &mut Visible::default())?;
     let file_colleagues = w.colleagues.clone().unwrap_or_default();
     let can_ask = match file_colleagues.can_ask {
@@ -1128,6 +1180,20 @@ steps:
   agent: planner
   input: steps.design.output
 ";
+
+    #[test]
+    fn reads_a_launch_step_and_writes_it_back() {
+        let yaml = "name: L\nsteps:\n- id: plan\n  agent: planner\n- id: go\n  launch: review-a-change\n  input: 'Check {{ steps.plan.output }}'\n";
+        let w = parse("l", "l.yaml", yaml, &shared()).unwrap();
+        assert_eq!((w.steps[1].kind, w.steps[1].launch.as_deref()), (StepKind::Launch, Some("review-a-change")));
+        let again = serde_yaml::to_string(&w.steps[1].to_file()).unwrap();
+        assert!(again.contains("launch: review-a-change") && again.contains("input: Check {{ steps.plan.output }}"));
+
+        let err = |text: &str| parse("l", "l.yaml", text, &shared()).unwrap_err();
+        assert!(err("name: L\nsteps:\n- id: go\n  launch: Not A Name\n").contains("file name"));
+        assert!(err("name: L\nsteps:\n- id: go\n  launch: x\n  agent: planner\n").contains("`agent` doesn't belong"));
+        assert!(err("name: L\nsteps:\n- id: go\n  launch: x\n  input: '{{ steps.nope.output }}'\n").contains("no earlier step `nope`"));
+    }
 
     #[test]
     fn reads_a_team_step_and_its_limits() {

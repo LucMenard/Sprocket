@@ -17,6 +17,15 @@ Windows only for now.
   - Parallel branches run at the same time, and the step after them waits for all of them.
   - An action does one thing in another tool (a Jira comment or status change, a Slack message) through a small
     agent that has the MCP server for it.
+  - A launch step (`launch: <workflow>`) runs another workflow on the same ticket and worktree, and waits for it.
+    Its `input` becomes that run's request (`{{ request }}`), and what that run's last step gave becomes the
+    step's output. The step fails if that run fails or is cancelled; retrying it continues that run. Cancelling
+    the outer run cancels it too. A workflow can't launch one that is already running higher up the same chain,
+    and Tracket shows the whole chain as the outer run. With `ticket` (`{{ subtask }}` in a loop, giving
+    `SIS-301` or `SIS-301 Its title`), it runs on that ticket instead, in that ticket's worktree: the same one
+    Tracket's Start working makes (`<repo>/.claude/worktrees/<KEY>`, on a branch named after the key, from origin's
+    default branch), made when missing. That run then has its own row in Tracket. At the launched workflow's limit
+    of runs at once, the step waits for room instead of failing.
   - An approval step waits until someone approves it. Rejecting it can send the run back to an earlier step
     (`onReject`), with the reason passed to the agent.
   - An agent whose policy asks before a tool call waits for an answer. The answer goes back to the agent.

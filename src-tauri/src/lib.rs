@@ -10,6 +10,7 @@ mod host;
 mod token;
 mod tray;
 mod workflow;
+mod worktree;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

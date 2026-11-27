@@ -47,6 +47,7 @@ export function draftProblems(d: WorkflowDraft): string[] {
     if (s.kind === 'condition' && !s.then.length && !s.else.length) out.push(`The condition ${s.id} has no branch.`)
     if (s.kind === 'forEach' && !s.steps.length) out.push(`The loop ${s.id} has no steps.`)
     if ((s.kind === 'agent' || s.kind === 'action') && !s.agent) out.push(`${s.id} has no agent type.`)
+    if (s.kind === 'launch' && !s.launch) out.push(`${s.id} has no workflow to launch.`)
     if (s.kind === 'team') {
       const t = s.team
       if (!t || t.members.length < 2) out.push(`The team ${s.id} needs two members or more.`)
@@ -72,7 +73,7 @@ function freeId(d: WorkflowDraft, base: string, taken: string[] = []) {
   return id
 }
 
-const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together', team: 'team' }
+const BASE: Record<StepKind, string> = { agent: 'work', approval: 'approve', action: 'tell', condition: 'check', forEach: 'each', parallel: 'together', team: 'team', launch: 'launch' }
 
 /** `steps.old.` → `steps.new.` in a text */
 const renameIn = (text: string | null | undefined, from: string, to: string) =>

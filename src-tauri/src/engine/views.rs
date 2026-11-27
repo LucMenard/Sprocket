@@ -37,6 +37,8 @@ pub struct JobView {
     /// For an ask (`kind: ask`): the job that asked, and its question
     pub parent_job: Option<String>,
     pub question: Option<String>,
+    /// For a launch step (`kind: launch`): the run it started
+    pub launched_run: Option<String>,
     /// What happened to the job, oldest first: started, tool asks and answers, done or failed
     pub log: Vec<LogLine>,
 }
@@ -117,10 +119,13 @@ pub struct RunView {
     /// The run's board, oldest first
     pub notes: Vec<super::board::NoteView>,
     pub cost_usd: f64,
+    /// For a run launched by another run's step: that run
+    pub parent_run: Option<String>,
 }
 
 const RUN_COLUMNS: &str = "id, workflow_id, workflow_name, workflow_json, number, ticket_key, ticket_title, ticket_url,
-    folder, started_by, state, started_at, ended_at, request";
+    folder, started_by, state, started_at, ended_at, request,
+    (SELECT j.run_id FROM jobs j WHERE j.id = runs.parent_job)";
 
 fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
     let wf: Option<Workflow> = serde_json::from_str(&r.get::<_, String>(3)?).ok();
@@ -142,13 +147,16 @@ fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
         approvals: Vec::new(),
         notes: Vec::new(),
         cost_usd: 0.0,
+        parent_run: r.get(14)?,
     })
 }
 
 fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
     let mut jobs = conn.prepare(
         "SELECT id, step_id, kind, state, attempt, output, error, cost_usd, started_at, ended_at, sdk_session_id IS NOT NULL,
-         scope, superseded, data, parent_job, question FROM jobs WHERE run_id = ?1 ORDER BY rowid",
+         scope, superseded, data, parent_job, question,
+         (SELECT c.id FROM runs c WHERE c.parent_job = jobs.id ORDER BY c.rowid DESC LIMIT 1)
+         FROM jobs WHERE run_id = ?1 ORDER BY rowid",
     )?;
     run.jobs = jobs
         .query_map([&run.id], |r| {
@@ -169,6 +177,7 @@ fn fill(conn: &Connection, run: &mut RunView) -> Result<()> {
                 data: r.get::<_, Option<String>>(13)?.and_then(|d| serde_json::from_str(&d).ok()),
                 parent_job: r.get(14)?,
                 question: r.get(15)?,
+                launched_run: r.get(16)?,
                 log: Vec::new(),
             })
         })?
@@ -227,15 +236,22 @@ pub struct TicketSummary {
 /// The latest run of each ticket that has one, newest first.
 pub fn tickets(conn: &Connection) -> Result<Vec<TicketSummary>> {
     let mut stmt = conn.prepare(
+        // A ticket's latest run started from outside; the runs its launch steps started count as part of it
+        // (`root_run`), so a decision or a failure down the chain shows on the ticket
         "SELECT r.ticket_key, r.id, r.number, r.workflow_name, r.state, r.started_at,
-           (SELECT a.id FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
-           (SELECT a.summary FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
-           (SELECT j.id FROM jobs j WHERE j.run_id = r.id AND j.superseded = 0 AND j.state IN ('failed', 'interrupted', 'rejected')
-              ORDER BY j.rowid DESC LIMIT 1),
-           (SELECT a.kind FROM approvals a WHERE a.run_id = r.id AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
-           (SELECT COUNT(*) FROM jobs j WHERE j.run_id = r.id AND j.state = 'running')
+           (SELECT a.id FROM approvals a JOIN runs t ON t.id = a.run_id WHERE (t.id = r.id OR t.root_run = r.id)
+              AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT a.summary FROM approvals a JOIN runs t ON t.id = a.run_id WHERE (t.id = r.id OR t.root_run = r.id)
+              AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT j.id FROM jobs j JOIN runs t ON t.id = j.run_id WHERE (t.id = r.id OR t.root_run = r.id)
+              AND j.superseded = 0 AND j.state IN ('failed', 'interrupted', 'rejected') ORDER BY j.rowid DESC LIMIT 1),
+           (SELECT a.kind FROM approvals a JOIN runs t ON t.id = a.run_id WHERE (t.id = r.id OR t.root_run = r.id)
+              AND a.state = 'pending' ORDER BY a.created_at LIMIT 1),
+           (SELECT COUNT(*) FROM jobs j JOIN runs t ON t.id = j.run_id WHERE (t.id = r.id OR t.root_run = r.id)
+              AND j.state = 'running' AND j.kind != 'launch')
          FROM runs r
-         WHERE r.started_at = (SELECT MAX(o.started_at) FROM runs o WHERE o.ticket_key = r.ticket_key)
+         WHERE r.root_run IS NULL
+           AND r.started_at = (SELECT MAX(o.started_at) FROM runs o WHERE o.ticket_key = r.ticket_key AND o.root_run IS NULL)
          ORDER BY r.started_at DESC LIMIT 500",
     )?;
     let rows = stmt

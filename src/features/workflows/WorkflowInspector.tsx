@@ -194,6 +194,7 @@ export function WorkflowInspector({
   editing,
   node,
   agents,
+  launchable,
   flow,
   link,
   onSelect,
@@ -206,6 +207,8 @@ export function WorkflowInspector({
   node: string
   /** The agent types a step can use: shared ones and this workflow's own */
   agents: AgentType[]
+  /** The workflows a launch step can run: all but this one */
+  launchable: { id: string; name: string; forRequests: boolean }[]
   /** The graph as drawn, for the node's links */
   flow: Flow
   /** A selected link: shown instead of the node */
@@ -367,6 +370,52 @@ export function WorkflowInspector({
                     : 'The agent answers in text. JSON fields let conditions and loops read its result.'}
                 </span>
               </fieldset>
+            </>
+          )}
+
+          {step.kind === 'launch' && (
+            <>
+              <Field
+                label="Workflow"
+                htmlFor="n-launch"
+                help="This step waits for it, and fails if it fails; a retry goes on with it. At that workflow's limit of runs, it waits for room."
+              >
+                <select id="n-launch" className="ct-input" value={step.launch ?? ''} onChange={(e) => set({ launch: e.target.value || null })}>
+                  <option value="">Choose a workflow</option>
+                  {step.launch && !launchable.some((w) => w.id === step.launch) && <option value={step.launch}>{step.launch} (not found)</option>}
+                  {launchable.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field
+                label="Ticket"
+                htmlFor="n-ticket"
+                help={
+                  <>
+                    Optional. Left empty, it runs on this run's ticket and worktree. Set, for example {'{{ subtask }}'} in a loop, it runs on that ticket
+                    (its key first: SIS-301, or SIS-301 and its title) in that ticket's worktree, made as Tracket makes it.
+                  </>
+                }
+              >
+                <input id="n-ticket" className="ct-input ct-mono" value={step.ticket ?? ''} onChange={(e) => set({ ticket: e.target.value || null })} />
+              </Field>
+              <Field
+                label="What it is asked"
+                htmlFor="n-ask"
+                help={
+                  <>
+                    Its steps read it as {'{{ request }}'}. Use {'{{ … }}'} to put in what this step can read; left empty, it gets this run's request,
+                    if any.
+                    {launchable.find((w) => w.id === step.launch)?.forRequests && ' That workflow runs what it is asked: it needs one.'}
+                  </>
+                }
+              >
+                <textarea id="n-ask" rows={4} className="ct-input h-auto py-2.5 leading-normal" value={step.input ?? ''} onChange={(e) => set({ input: e.target.value || null })} />
+              </Field>
+              <p className="text-xs text-ct-text-3">Later steps read what its last step gave as {output(step.id)}.</p>
             </>
           )}
 

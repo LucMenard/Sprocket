@@ -14,6 +14,8 @@ const LOOK: Record<State, { label: string; color: string | null; glyph: string; 
   cancelled: { label: 'Cancelled', color: 'var(--ct-idle)', glyph: 'M8 16l8-8', pill: 'ct-pill-none' },
   stopped: { label: 'Stopped', color: 'var(--ct-idle)', glyph: 'M8 16l8-8', pill: 'ct-pill-none' },
   interrupted: { label: 'Interrupted', color: 'var(--ct-waiting)', glyph: 'M12 7v6M12 16.5v.5', pill: 'ct-pill-wait' },
+  preparing: { label: 'Making the worktree', color: 'var(--ct-accent)', glyph: 'M12 7v5l3 2', pill: 'ct-pill-run' },
+  queued: { label: 'Waiting for room', color: 'var(--ct-idle)', glyph: 'M10 8v8M14 8v8', pill: 'ct-pill-none' },
   pending: { label: 'Not started', color: null, glyph: '', pill: 'ct-pill-none' },
 }
 

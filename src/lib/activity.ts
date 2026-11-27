@@ -14,6 +14,12 @@ export function describe(what: string, detail: string | null): string {
       return `Step ${d} started`
     case 'job.resumed':
       return `Step ${d} resumed its session`
+    case 'launch.started':
+      return `Launched ${d}`
+    case 'launch.preparing':
+      return `Making the worktree for ${d}`
+    case 'launch.queued':
+      return `Waiting for room: ${d}`
     case 'job.retried':
       return `Step ${d} retried`
     case 'job.done':

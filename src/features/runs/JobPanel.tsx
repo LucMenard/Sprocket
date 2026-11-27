@@ -10,6 +10,7 @@ import { duration, usd, when } from '@/lib/format'
 import { findPlace, scopeLabel } from '@/lib/steps'
 import { StateDot, stateLabel } from './StateBadge'
 import { Transcript } from './Transcript'
+import { useRunSelection } from './useRunSelection'
 
 function Facts({ rows }: { rows: [string, ReactNode, boolean?][] }) {
   return (
@@ -230,6 +231,11 @@ export function JobPanel({ run, stepId }: { run: Run; stepId: string }) {
 
           <Asks run={run} parent={job} />
           {job.kind === 'team' && <Members run={run} team={job} />}
+          {job.kind === 'launch' && job.launchedRun && (
+            <button type="button" className="ct-btn self-start" onClick={() => useRunSelection.getState().select(job.launchedRun)}>
+              Open the run it launched
+            </button>
+          )}
 
           {approvals.map((a) => (
             <ApprovalCard key={a.id} approval={a} run={run} />
