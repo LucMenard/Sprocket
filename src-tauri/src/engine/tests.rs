@@ -277,6 +277,9 @@ fn jobs_keep_a_log_and_runs_feed_the_activity() {
     let (job, _) = w.last_start();
     w.host(json!({"type": "job.message", "jobId": job, "message": {"type": "system", "subtype": "init", "session_id": "s",
         "mcp_servers": [{"name": "Atlassian2", "status": "connected", "source": "user"}]}}));
+    // A later session of an agent with no MCP server sees only Sprocket's own: the list keeps the user's
+    w.host(json!({"type": "job.message", "jobId": job, "message": {"type": "system", "subtype": "init", "session_id": "s",
+        "mcp_servers": [{"name": "sprocket", "status": "connected"}]}}));
     w.host(json!({"type": "tool.ask", "askId": "a", "jobId": job, "toolName": "Bash", "input": {}}));
     let ask = w.run(&run.id).approvals[0].id.clone();
     w.engine.decide(&ask, true, Some("fine".into()), "Luc").unwrap();
@@ -294,7 +297,8 @@ fn jobs_keep_a_log_and_runs_feed_the_activity() {
 
     let mcp = w.engine.mcp_servers().unwrap();
     assert!(mcp.seen_at.is_some());
-    assert_eq!((mcp.servers[0].name.as_str(), mcp.servers[0].status.as_str()), ("Atlassian2", "connected"));
+    let names: Vec<_> = mcp.servers.iter().map(|s| (s.name.as_str(), s.status.as_str())).collect();
+    assert_eq!(names, [("Atlassian2", "connected")]);
 }
 
 // ---- Conditions, loops, actions and JSON outputs ----

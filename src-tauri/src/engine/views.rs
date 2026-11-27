@@ -308,17 +308,19 @@ pub fn activity(conn: &Connection, limit: u32) -> Result<Vec<ActivityView>> {
     Ok(rows)
 }
 
-/// The MCP servers listed by the most recent agent session's `init` message.
+/// Sprocket's own server (the board and ask_agent), which the agent host adds to sessions: not one of the user's
+const BOARD_SERVER: &str = "sprocket";
+
+/// The user's MCP servers, as the most recent agent session that loaded them listed them in its `init` message.
+/// Sessions of agents with no MCP server load none of the user's (only Sprocket's own, at most), so they're skipped.
 pub fn mcp_servers(conn: &Connection) -> Result<McpServers> {
-    let latest: Option<(String, Option<String>)> = conn
-        .query_row(
-            "SELECT body, at FROM messages
-             WHERE json_extract(body, '$.type') = 'system' AND json_extract(body, '$.subtype') = 'init'
-             ORDER BY rowid DESC LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
+    let mut stmt = conn.prepare(
+        "SELECT body, at FROM messages
+         WHERE json_extract(body, '$.type') = 'system' AND json_extract(body, '$.subtype') = 'init'
+           AND EXISTS (SELECT 1 FROM json_each(body, '$.mcp_servers') WHERE json_extract(value, '$.name') != ?1)
+         ORDER BY rowid DESC LIMIT 1",
+    )?;
+    let latest: Option<(String, Option<String>)> = stmt.query_row([BOARD_SERVER], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
     let Some((body, at)) = latest else {
         return Ok(McpServers { seen_at: None, servers: Vec::new() });
     };
@@ -332,6 +334,7 @@ pub fn mcp_servers(conn: &Connection) -> Result<McpServers> {
                     status: s["status"].as_str().unwrap_or("unknown").to_string(),
                     source: s["source"].as_str().map(str::to_string),
                 })
+                .filter(|s| !s.name.is_empty() && s.name != BOARD_SERVER)
                 .collect()
         })
         .unwrap_or_default();
