@@ -168,6 +168,14 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
     setDraft(d)
   }
 
+  /** The branch a node's dot leads into: `then`, `else`, `steps`, `case:<n>` */
+  const branchOf = (s: WorkflowStep, port: string): WorkflowStep[] | null => {
+    if (port.startsWith('case:')) return s.kind === 'switch' ? (s.branches[Number(port.slice(5))] ?? null) : null
+    if (port === 'then' || port === 'else') return s.kind === 'condition' || (s.kind === 'switch' && port === 'else') ? s[port] : null
+    if (port === 'steps') return s.kind === 'forEach' ? s.steps : null
+    return null
+  }
+
   const blockOf = (d: WorkflowDraft, slot: Slot): WorkflowStep[] | null => {
     if (!slot.parent) return d.steps
     const parent = find(d, slot.parent)?.step
@@ -179,9 +187,11 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
    * `to` runs after `from`. When `from` has nothing after it (or is a condition or loop with an empty branch or
    * body), `to` goes there; when something follows it already, the two run side by side in a parallel group.
    * An approval linked to an earlier step next to it gets a rejection link instead.
+   * `port`, from a node with several ways out, says which: `then`, `else`, `steps` (a loop's body), `case:<n>` (a
+   * switch's case) put `to` at the start of that branch; `next` after the node. Without it, the first empty branch.
    * Returns why it can't be done, or null.
    */
-  const connect = (from: string, to: string): string | null => {
+  const connect = (from: string, to: string, port?: string): string | null => {
     if (!current || from === to || to === '$trigger') return null
     // Linking again what was deleted
     if (current.cut.includes(`${from}>${to}`)) {
@@ -215,7 +225,10 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
     // Already linked: the next step, the start of one of its branches, or of a parallel branch after it
     const after = source ? source.block[source.index + 1] : current.steps[0]
     const starts = [after, ...(after?.kind === 'parallel' ? after.branches.map((b) => b[0]) : [])]
-    if (source) starts.push(source.step.then[0], source.step.else[0], source.step.steps[0], ...(source.step.kind === 'switch' ? source.step.branches.map((b) => b[0]) : []))
+    const branch = source && port && port !== 'next' ? branchOf(source.step, port) : null
+    if (branch) starts.splice(0, starts.length, branch[0])
+    else if (source && !port)
+      starts.push(source.step.then[0], source.step.else[0], source.step.steps[0], ...(source.step.kind === 'switch' ? source.step.branches.map((b) => b[0]) : []))
     if (starts.some((s) => s?.id === to)) return null
     if (source?.step.kind === 'approval' && source.block.slice(0, source.index).some((s) => s.id === to)) {
       update((d) => void (find(d, from)!.step.onReject = to))
@@ -236,11 +249,20 @@ export function useWorkflowDraft(saved: Workflow | undefined) {
       }
       const at = find(d, from)!
       const s = at.step
-      if (s.kind === 'condition' && s.then.length === 0) return void s.then.push(...moved)
-      if (s.kind === 'condition' && s.else.length === 0) return void s.else.push(...moved)
-      if (s.kind === 'forEach' && s.steps.length === 0) return void s.steps.push(...moved)
+      // From a branch's dot: at the start of that branch, side by side with what starts it already
+      const into = port && port !== 'next' ? branchOf(s, port) : null
+      if (into) {
+        if (!into.length) into.push(...moved)
+        else if (into[0].kind === 'parallel') into[0].branches.push(moved)
+        else into[0] = group(into[0])
+        return
+      }
+      // From the dot after the node, or by keyboard (no dot): an empty branch first, by keyboard only
+      if (!port && s.kind === 'condition' && s.then.length === 0) return void s.then.push(...moved)
+      if (!port && s.kind === 'condition' && s.else.length === 0) return void s.else.push(...moved)
+      if (!port && s.kind === 'forEach' && s.steps.length === 0) return void s.steps.push(...moved)
       // A switch: its first empty case, else its default when it has none, else a new case
-      if (s.kind === 'switch') {
+      if (!port && s.kind === 'switch') {
         const empty = s.branches.findIndex((b) => b.length === 0)
         if (empty >= 0) return void s.branches[empty].push(...moved)
         if (s.else.length === 0) return void s.else.push(...moved)

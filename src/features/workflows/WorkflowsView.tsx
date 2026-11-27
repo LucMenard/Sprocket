@@ -407,8 +407,8 @@ export function WorkflowsView() {
                 flow={flow}
                 selected={node}
                 onSelect={select}
-                onConnect={(from, to) => {
-                  const why = editing.connect(from, to)
+                onConnect={(from, to, port) => {
+                  const why = editing.connect(from, to, port)
                   setLinkError(why)
                   if (!why) select(to)
                 }}

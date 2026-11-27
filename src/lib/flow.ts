@@ -15,8 +15,40 @@ export interface FlowNode {
   took?: string
   /** In the editor: no link reaches it yet */
   loose?: boolean
+  /**
+   * In the editor, a node with several ways out has a dot for each (see `portsOf`); others have one, `next`.
+   * A link dragged from a dot goes that way: into the branch, the loop's body, or after the node.
+   */
+  ports?: Port[]
   x: number
   y: number
+}
+
+/** A way out of a node: `next`, `then`, `else`, `steps` (a loop's body), `case:<n>` (a switch's case). */
+export interface Port {
+  id: string
+  label: string
+}
+
+/** The dots under a node with more than one way out. */
+export function portsOf(s: WorkflowStep): Port[] | undefined {
+  switch (s.kind) {
+    case 'condition':
+      return [
+        { id: 'then', label: 'yes' },
+        { id: 'else', label: 'no' },
+        { id: 'next', label: 'after' },
+      ]
+    case 'switch':
+      return [...s.cases.map((c, i) => ({ id: `case:${i}`, label: c || `case ${i + 1}` })), { id: 'else', label: 'default' }, { id: 'next', label: 'after' }]
+    case 'forEach':
+      return [
+        { id: 'steps', label: 'each' },
+        { id: 'next', label: 'all done' },
+      ]
+    default:
+      return undefined
+  }
 }
 
 /**
@@ -168,7 +200,7 @@ export function workflowFlow(
   }
 
   const node = (s: WorkflowStep, x: number, y: number): Laid => {
-    nodes.push({ id: s.id, kind: s.kind, title: s.id, x, y, ...describe(s) })
+    nodes.push({ id: s.id, kind: s.kind, title: s.id, x, y, ...(mode === 'design' ? { ports: portsOf(s) } : {}), ...describe(s) })
     right = Math.max(right, x + W)
     if (s.kind === 'condition') {
       const yesLink = s.then.length ? { type: 'branch' as const, condition: s.id, branch: 'then' as const } : undefined
