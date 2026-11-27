@@ -5,7 +5,6 @@ import { useUpdates } from '@/features/update/updateStore'
 import { inTauri } from '@/lib/api'
 import { useNav, type ViewId } from '@/lib/nav'
 import { useStatus, useTracketConnection } from '@/lib/queries'
-import { setThemePreference, useThemePreference, type ThemePreference } from '@/lib/theme'
 import { Logo } from './Logo'
 
 const TABS: { id: ViewId; label: string }[] = [
@@ -111,31 +110,6 @@ function Status() {
   )
 }
 
-const NEXT: Record<ThemePreference, ThemePreference> = { system: 'light', light: 'dark', dark: 'system' }
-const THEME_ICON: Record<ThemePreference, string> = {
-  dark: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
-  light: 'M12 4V2M12 22v-2M4 12H2M22 12h-2M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
-  system: 'M3 5h18v12H3zM8 21h8M12 17v4',
-}
-
-function ThemeButton() {
-  const preference = useThemePreference()
-  const title = `Theme: ${preference[0].toUpperCase()}${preference.slice(1)} (click for ${NEXT[preference]})`
-  return (
-    <button
-      type="button"
-      aria-label={title}
-      title={title}
-      onClick={() => setThemePreference(NEXT[preference])}
-      className={`flex size-9 items-center justify-center rounded-lg text-[var(--mfg)] ${ghost}`}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <path d={THEME_ICON[preference]} />
-      </svg>
-    </button>
-  )
-}
-
 /** Opens Settings; a dot on it while a new version waits to be installed. */
 function SettingsButton() {
   const [open, setOpen] = useState(false)
@@ -193,7 +167,6 @@ export function AppHeader({ waiting }: { waiting: number }) {
         </nav>
         <div className="ml-auto flex items-center gap-2.5">
           <Status />
-          <ThemeButton />
           <SettingsButton />
         </div>
       </div>

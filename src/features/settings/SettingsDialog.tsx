@@ -43,7 +43,6 @@ function AppearanceSettings() {
           </label>
         ))}
       </div>
-      <p className="mt-3 text-xs text-ct-text-3">The button beside the status in the header switches between the same three.</p>
     </div>
   )
 }
