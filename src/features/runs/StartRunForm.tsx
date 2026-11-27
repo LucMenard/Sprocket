@@ -32,7 +32,8 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
     mutationFn: () =>
       api.startRun({
         workflow: workflow || workflows[0]?.id || '',
-        ticket: { key: key.trim().toUpperCase(), title: title.trim(), url: url.trim() },
+        // No key: a run on the folder, with no ticket
+        ticket: key.trim() ? { key: key.trim().toUpperCase(), title: title.trim() || key.trim().toUpperCase(), url: url.trim() } : null,
         folder: folder.trim(),
         startedBy: 'Sprocket',
         request: picked?.forRequests ? request.trim() : undefined,
@@ -52,7 +53,7 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
     <form onSubmit={submit} className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <h2 className="text-[17px] font-bold">Start a run</h2>
-        <p className="text-[13px] text-ct-text-3">Tracket starts runs from a ticket. This does the same by hand, in a worktree you already have.</p>
+        <p className="text-[13px] text-ct-text-3">Tracket starts runs from a ticket. This does the same by hand, in a folder you already have: a ticket's worktree, or a repository with no ticket.</p>
       </div>
       <Field id="sr-workflow" label="Workflow">
         <select id="sr-workflow" className="ct-input" value={workflow || workflows[0]?.id || ''} onChange={(e) => setWorkflow(e.target.value)}>
@@ -69,17 +70,17 @@ export function StartRunForm({ onStarted, onCancel }: { onStarted: (run: Run) =>
         </Field>
       )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-[10rem_1fr]">
-        <Field id="sr-key" label="Ticket">
-          <input id="sr-key" className="ct-input ct-mono" required placeholder="SIS-244" value={key} onChange={(e) => setKey(e.target.value)} />
+        <Field id="sr-key" label="Ticket (optional)">
+          <input id="sr-key" className="ct-input ct-mono" placeholder="SIS-244" value={key} onChange={(e) => setKey(e.target.value)} />
         </Field>
         <Field id="sr-title" label="Title">
-          <input id="sr-title" className="ct-input" required value={title} onChange={(e) => setTitle(e.target.value)} />
+          <input id="sr-title" className="ct-input" disabled={!key.trim()} value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
       </div>
       <Field id="sr-url" label="Link">
-        <input id="sr-url" className="ct-input" required type="url" placeholder="https://acme.atlassian.net/browse/SIS-244" value={url} onChange={(e) => setUrl(e.target.value)} />
+        <input id="sr-url" className="ct-input" disabled={!key.trim()} type="url" placeholder="https://acme.atlassian.net/browse/SIS-244" value={url} onChange={(e) => setUrl(e.target.value)} />
       </Field>
-      <Field id="sr-folder" label="Worktree folder">
+      <Field id="sr-folder" label={key.trim() ? 'Worktree folder' : 'Repository folder'}>
         <div className="flex gap-2">
           <input id="sr-folder" className="ct-input ct-mono" required value={folder} onChange={(e) => setFolder(e.target.value)} />
           <button

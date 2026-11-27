@@ -115,6 +115,7 @@ fn start(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let _ = workflow::load_all(&ctx.workflows_dir);
     app.manage(ctx.clone());
 
+    schedule(ctx.engine.clone());
     api::serve(ctx);
     let launch = host::find_claude()
         .ok_or_else(|| "Claude Code isn't installed: no claude.exe in ~/.local/bin or on the PATH".to_string())
@@ -131,6 +132,20 @@ fn start(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     tray::create(app)?;
     open_view_from_env(app);
     Ok(())
+}
+
+/// Looks at the workflows' schedules every 15 seconds, for as long as the app runs.
+fn schedule(engine: Arc<engine::Engine>) {
+    std::thread::spawn(move || loop {
+        // A panic in one look mustn't end the schedules for the rest of the session
+        let looked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.tick_schedules(chrono::Local::now())));
+        match looked {
+            Ok(Err(e)) => log::warn!("The schedules couldn't be looked at: {}", e.message),
+            Err(_) => log::error!("Looking at the schedules panicked"),
+            Ok(Ok(())) => {}
+        }
+        std::thread::sleep(std::time::Duration::from_secs(15));
+    });
 }
 
 /// Debug builds only: `SPROCKET_VIEW=runs` opens on that screen, and `SPROCKET_THEME=light|dark` shows that
@@ -203,6 +218,9 @@ pub fn run() {
             commands::delete_agent,
             commands::share_agent,
             commands::stop_agents_for_update,
+            commands::run_now,
+            commands::trigger_statuses,
+            commands::schedule_preview,
         ])
         .setup(|app| start(app))
         .on_window_event(|window, event| {

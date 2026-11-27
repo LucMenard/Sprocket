@@ -6,7 +6,7 @@ import { KINDS } from '@/lib/flow'
 import { ApprovalCard } from '@/features/approvals/ApprovalCard'
 import { describe } from '@/lib/activity'
 import { api, type AppError, type Job, type Run } from '@/lib/api'
-import { duration, usd, when } from '@/lib/format'
+import { duration, startedFrom, usd, when } from '@/lib/format'
 import { findPlace, scopeLabel } from '@/lib/steps'
 import { StateDot, stateLabel } from './StateBadge'
 import { Transcript } from './Transcript'
@@ -49,8 +49,15 @@ function logColor(what: string) {
 export function RunEndsPanel({ run, which }: { run: Run; which: 'trigger' | 'end' }) {
   return which === 'trigger' ? (
     <div className="flex flex-col gap-[18px]">
-      <Heading mark={<KindIcon kind="trigger" size={28} />} eyebrow="Trigger" title="Started from Tracket" />
-      <Facts rows={[['Started by', run.startedBy], ['Started', when(run.startedAt)], ['Ticket', `${run.ticket.key} ${run.ticket.title}`], ['Worktree', <span key="v" className="text-xs break-all ct-mono">{run.folder}</span>]]} />
+      <Heading mark={<KindIcon kind="trigger" size={28} />} eyebrow="Trigger" title={startedFrom(run)} />
+      <Facts
+        rows={[
+          ['Started by', run.startedBy],
+          ['Started', when(run.startedAt)],
+          ['Ticket', run.ticket ? `${run.ticket.key} ${run.ticket.title}` : 'None: it works on the folder'],
+          [run.ticket ? 'Worktree' : 'Folder', <span key="v" className="text-xs break-all ct-mono">{run.folder}</span>],
+        ]}
+      />
     </div>
   ) : (
     <div className="flex flex-col gap-[18px]">

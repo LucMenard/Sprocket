@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useRunSelection } from '@/features/runs/useRunSelection'
 import { api, type AppError, type Approval, type Run } from '@/lib/api'
-import { when } from '@/lib/format'
+import { when, workLabel } from '@/lib/format'
 import { useNav } from '@/lib/nav'
 
 /** What a tool ask wants to do, shortest useful form first. */
@@ -42,7 +42,7 @@ export function ApprovalCard({ approval, run, showRun = false }: { approval: App
         <span className="flex min-w-0 flex-[1_1_260px] flex-col gap-0.5">
           <span className="font-semibold">{title}</span>
           <span className="text-xs text-ct-text-2">
-            <span className="ct-mono">{run.ticket.key}</span> {run.ticket.title} · {run.workflowName} #{run.number} · {when(approval.createdAt)}
+            <span className="ct-mono">{workLabel(run)}</span> {run.ticket?.title ?? ''} · {run.workflowName} #{run.number} · {when(approval.createdAt)}
           </span>
         </span>
         <button type="button" className="ct-btn ct-btn-sm ct-btn-approve" disabled={decide.isPending} onClick={() => decide.mutate(true)}>

@@ -16,6 +16,10 @@ export function describe(what: string, detail: string | null): string {
       return `Step ${d} resumed its session`
     case 'launch.started':
       return `Launched ${d}`
+    case 'trigger.started':
+      return `Started after it: ${d}`
+    case 'trigger.skipped':
+      return `Not started after it: ${d}`
     case 'launch.preparing':
       return `Making the worktree for ${d}`
     case 'launch.queued':

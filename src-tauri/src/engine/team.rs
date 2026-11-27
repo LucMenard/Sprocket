@@ -25,11 +25,9 @@ fn team_of<'a>(run: &'a RunRow, step_id: &str) -> Result<(&'a Step, &'a Team)> {
 fn member_prompt(conn: &Connection, run: &RunRow, step: &Step, team: &Team, scope: &str, me: &str, feedback: Option<&str>) -> String {
     let others: Vec<&str> = team.members.iter().map(String::as_str).filter(|m| *m != me).collect();
     let mut p = format!(
-        "Jira ticket {}: {}\n{}\n\nYou are the {me} agent, one of a team ({}) working together on the step {} of the workflow \
+        "{}\n\nYou are the {me} agent, one of a team ({}) working together on the step {} of the workflow \
          \"{}\", run by Sprocket.\n",
-        run.ticket_key,
-        run.ticket_title,
-        run.ticket_url,
+        run.heading(),
         team.members.join(", "),
         steps::label(&step.id, scope),
         run.wf.name,

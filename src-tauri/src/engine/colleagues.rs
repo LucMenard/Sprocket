@@ -37,13 +37,11 @@ pub fn available(run: &RunRow, agent: &str, kind: &str) -> Vec<Colleague> {
 
 fn ask_prompt(run: &RunRow, asker: &Job, asker_agent: &str, agent: &str, question: &str) -> String {
     let mut p = format!(
-        "Jira ticket {}: {}\n{}\n\nYou are the {agent} agent of the workflow \"{}\", run by Sprocket. The {asker_agent} agent, \
+        "{}\n\nYou are the {agent} agent of the workflow \"{}\", run by Sprocket. The {asker_agent} agent, \
          working on the step {}, asks you a question. Answer it, in a few paragraphs at most: it reads your answer and \
          carries on with its step. Look at the code, the ticket or the run's board as you need. Don't change files unless \
          the question asks you to.\n",
-        run.ticket_key,
-        run.ticket_title,
-        run.ticket_url,
+        run.heading(),
         run.wf.name,
         steps::label(&asker.step_id, &asker.scope),
     );

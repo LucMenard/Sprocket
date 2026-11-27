@@ -4,6 +4,7 @@ import { KindIcon } from '@/components/FlowGraph'
 import { edgeKey, KINDS, type Flow, type FlowEdge, type FlowKind } from '@/lib/flow'
 import type { ActionKind, AgentType, OutputType, WorkflowDraft, WorkflowStep } from '@/lib/api'
 import { findPlace, readable } from '@/lib/steps'
+import { TriggersPanel } from './TriggersPanel'
 import type { WorkflowEditing } from './useWorkflowDraft'
 
 function Field({ label, htmlFor, help, children }: { label: string; htmlFor?: string; help?: ReactNode; children: ReactNode }) {
@@ -195,6 +196,8 @@ export function WorkflowInspector({
   node,
   agents,
   launchable,
+  workflowId,
+  dirty,
   flow,
   link,
   onSelect,
@@ -209,6 +212,9 @@ export function WorkflowInspector({
   agents: AgentType[]
   /** The workflows a launch step can run: all but this one */
   launchable: { id: string; name: string; forRequests: boolean }[]
+  /** The saved workflow's id, for Run now and the triggers' last runs */
+  workflowId: string | null
+  dirty: boolean
   /** The graph as drawn, for the node's links */
   flow: Flow
   /** A selected link: shown instead of the node */
@@ -224,7 +230,7 @@ export function WorkflowInspector({
   const place = findAnywhere(node)
   const step = place?.step
   const kind: FlowKind = node === '$trigger' ? 'trigger' : node === '$end' ? 'end' : (step?.kind ?? 'agent')
-  const title = node === '$trigger' ? 'Tracket' : node === '$end' ? 'Done' : node
+  const title = node === '$trigger' ? 'Start' : node === '$end' ? 'Done' : node
   const vis = step ? readable(draft.steps, step.id) : { steps: [], items: [] }
   const sources = vis.steps.filter((s) => s.kind !== 'condition')
   const refs = [
@@ -261,9 +267,7 @@ export function WorkflowInspector({
 
       {node === '$trigger' && (
         <>
-          <Field label="Connector" help="Jira events and schedules come later.">
-            <input className="ct-input" readOnly value="Tracket (manual only)" aria-label="Connector" />
-          </Field>
+          <span className="ct-label">From Tracket</span>
           <label className="flex cursor-pointer items-start gap-2.5">
             <input type="checkbox" className="mt-0.5 size-4" checked={draft.offerInTracket} onChange={(e) => editing.setField('offerInTracket', e.target.checked)} />
             <span className="flex flex-col gap-0.5">
@@ -278,6 +282,7 @@ export function WorkflowInspector({
               <span className="text-xs text-ct-text-3">Tracket's "Ask an agent" starts it with what you typed; steps read it as {'{{ request }}'}</span>
             </span>
           </label>
+          <TriggersPanel draft={draft} editing={editing} workflowId={workflowId} dirty={dirty} launchable={launchable} />
         </>
       )}
 

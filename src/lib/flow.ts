@@ -193,7 +193,7 @@ export function workflowFlow(
     return { exits: [{ from: s.id, label: s.kind === 'approval' ? 'approved' : undefined }], bottom: y + H, right: x + W + (back ? 70 : 0) }
   }
 
-  nodes.push({ id: '$trigger', kind: 'trigger', title: 'Tracket', x: LEFT, y: TOP, ...ends.trigger })
+  nodes.push({ id: '$trigger', kind: 'trigger', title: 'Start', x: LEFT, y: TOP, ...ends.trigger })
   const laid = block(steps, LEFT, TOP + H + GAP, [{ from: '$trigger' }])
   const endY = laid.bottom + GAP
   connect(laid.exits, '$end')

@@ -1,3 +1,24 @@
+/** The last part of a folder's path: `C:\dev\shop` gives `shop`. */
+export function folderName(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || path
+}
+
+/** What a run works on, in a word: its ticket's key, or its folder's name when it has no ticket. */
+export function workLabel(run: { ticket: { key: string } | null; folder: string }): string {
+  return run.ticket?.key ?? folderName(run.folder)
+}
+
+/** What started a run, as the trigger node says it. */
+export function startedFrom(run: { startedBy: string; parentRun: string | null }): string {
+  const by = run.startedBy
+  if (run.parentRun) return `Launched by ${by}`
+  if (by === 'Schedule') return 'Started on its schedule'
+  if (by === 'Webhook') return 'Started by its webhook'
+  if (by.startsWith('After ')) return `Started after ${by.slice(6)}`
+  if (by === 'You, in Sprocket' || by === 'Sprocket') return 'Started in Sprocket'
+  return 'Started from Tracket'
+}
+
 /** "10:05" today, "Yesterday 16:12", or "24 Nov 16:12", in 24-hour time like the mockups. */
 export function when(iso: string | null): string {
   if (!iso) return ''

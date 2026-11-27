@@ -101,7 +101,8 @@ pub struct RunView {
     pub workflow_id: String,
     pub workflow_name: String,
     pub number: i64,
-    pub ticket: TicketRef,
+    /// None: a run on a folder, with no Jira ticket
+    pub ticket: Option<TicketRef>,
     pub folder: String,
     pub started_by: String,
     /// What someone asked for, on a run started from a request
@@ -134,7 +135,7 @@ fn run_from_row(r: &Row) -> rusqlite::Result<RunView> {
         workflow_id: r.get(1)?,
         workflow_name: r.get(2)?,
         number: r.get(4)?,
-        ticket: TicketRef { key: r.get(5)?, title: r.get(6)?, url: r.get(7)? },
+        ticket: Some(TicketRef { key: r.get(5)?, title: r.get(6)?, url: r.get(7)? }).filter(|t| !t.key.is_empty()),
         folder: r.get(8)?,
         started_by: r.get(9)?,
         request: r.get(13)?,
@@ -250,7 +251,7 @@ pub fn tickets(conn: &Connection) -> Result<Vec<TicketSummary>> {
            (SELECT COUNT(*) FROM jobs j JOIN runs t ON t.id = j.run_id WHERE (t.id = r.id OR t.root_run = r.id)
               AND j.state = 'running' AND j.kind != 'launch')
          FROM runs r
-         WHERE r.root_run IS NULL
+         WHERE r.root_run IS NULL AND r.ticket_key != ''
            AND r.started_at = (SELECT MAX(o.started_at) FROM runs o WHERE o.ticket_key = r.ticket_key AND o.root_run IS NULL)
          ORDER BY r.started_at DESC LIMIT 500",
     )?;
@@ -304,7 +305,7 @@ pub fn job_messages(conn: &Connection, job_id: &str) -> Result<Vec<Value>> {
 /// The latest activity across runs, newest first.
 pub fn activity(conn: &Connection, limit: u32) -> Result<Vec<ActivityView>> {
     let mut stmt = conn.prepare(
-        "SELECT a.at, a.what, a.detail, a.run_id, r.ticket_key, r.workflow_name, r.number
+        "SELECT a.at, a.what, a.detail, a.run_id, NULLIF(r.ticket_key, ''), r.workflow_name, r.number
          FROM activity a LEFT JOIN runs r ON r.id = a.run_id
          WHERE a.run_id IS NOT NULL ORDER BY a.id DESC LIMIT ?1",
     )?;

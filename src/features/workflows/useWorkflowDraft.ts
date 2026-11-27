@@ -15,6 +15,7 @@ export function draftOf(w: Workflow): WorkflowDraft {
     layout: structuredClone(w.layout ?? {}),
     colleagues: structuredClone(w.colleagues ?? { canAsk: [], maxAsks: 3 }),
     teamLimits: structuredClone(w.teamLimits ?? { maxTurns: 40, budgetUsd: 5, minutes: 60 }),
+    triggers: structuredClone(w.triggers ?? []),
     loose: [],
     cut: [],
     extra: [],
@@ -41,8 +42,15 @@ export function draftProblems(d: WorkflowDraft): string[] {
   }
   for (const c of d.cut) {
     const [from, to] = c.split('>')
-    out.push(`The link ${from.replace('$trigger', 'Tracket')} → ${to === '$end' ? 'Done' : to} is deleted: link them again, or change the steps.`)
+    out.push(`The link ${from.replace('$trigger', 'Start')} → ${to === '$end' ? 'Done' : to} is deleted: link them again, or change the steps.`)
   }
+  d.triggers.forEach((t, i) => {
+    const what = `Trigger ${i + 1}`
+    if (t.schedule != null && !t.schedule.trim()) out.push(`${what} has no schedule.`)
+    if (t.after != null && !t.after) out.push(`${what} has no workflow to follow.`)
+    if ((t.schedule != null || t.webhook) && !t.folder?.trim()) out.push(`${what} has no folder to work in.`)
+    if (t.schedule != null && d.forRequests && !t.request?.trim()) out.push(`${what}: this workflow runs what it is asked, so its schedule needs a request.`)
+  })
   for (const s of allSteps(d.steps)) {
     if (s.kind === 'condition' && !s.then.length && !s.else.length) out.push(`The condition ${s.id} has no branch.`)
     if (s.kind === 'forEach' && !s.steps.length) out.push(`The loop ${s.id} has no steps.`)

@@ -90,6 +90,8 @@ pub struct WorkflowDraft {
     /// None: the defaults
     #[serde(default)]
     pub team_limits: Option<workflow::TeamLimits>,
+    #[serde(default)]
+    pub triggers: Vec<workflow::Trigger>,
 }
 
 fn non_empty(text: Option<String>) -> Option<String> {
@@ -147,6 +149,7 @@ fn to_file(draft: WorkflowDraft, agents: std::collections::BTreeMap<String, File
         agents,
         steps,
         layout: draft.layout,
+        triggers: draft.triggers,
         colleagues: colleagues_file(draft.colleagues, &used_agents),
         team_limits: draft.team_limits.filter(|l| *l != workflow::TeamLimits::default()).map(|l| workflow::FileTeamLimits {
             max_turns: Some(l.max_turns),
@@ -188,6 +191,7 @@ pub fn create_workflow(dirs: &Dirs, name: &str) -> Result<Workflow> {
         layout: Default::default(),
         colleagues: None,
         team_limits: None,
+        triggers: Vec::new(),
         agents: Default::default(),
         steps: vec![step],
     };
@@ -339,6 +343,7 @@ mod tests {
             layout: Default::default(),
             colleagues: None,
             team_limits: None,
+            triggers: Vec::new(),
             steps: vec![
                 step("plan", StepKind::Agent, Some("planner"), None, None),
                 step("review", StepKind::Approval, None, Some("steps.plan.output"), Some("plan")),
@@ -359,6 +364,7 @@ mod tests {
             layout: Default::default(),
             colleagues: None,
             team_limits: None,
+            triggers: Vec::new(),
             steps: vec![step("plan", StepKind::Agent, Some("nobody"), None, None)],
         };
         assert!(save_workflow(&dirs, "fix-a-bug", broken).unwrap_err().message.contains("doesn't exist"));
@@ -425,6 +431,7 @@ mod tests {
             layout: Default::default(),
             colleagues: Some(c),
             team_limits: None,
+            triggers: Vec::new(),
         };
         // The defaults (the steps' agent types, 3 asks): nothing in the file
         save_workflow(&dirs, "fix-a-bug", draft(wf.colleagues.clone())).unwrap();

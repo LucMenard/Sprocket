@@ -54,6 +54,98 @@ pub struct FileWorkflow {
     /// Only the editor reads it; the others are laid out automatically
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<String, Point>,
+    /// What else starts it, besides Tracket and Run now in Sprocket
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<Trigger>,
+}
+
+/// After another workflow's run: which ends start this one.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AfterWhen {
+    /// It passed
+    #[default]
+    Passed,
+    /// It failed (a cancelled or interrupted run doesn't count)
+    Failed,
+    /// It passed or failed
+    Ended,
+}
+
+/// Something that starts the workflow by itself. Exactly one of `schedule`, `after` and `webhook`; the same in the
+/// file and once checked.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Trigger {
+    /// When: five cron fields (minute hour day month weekday), in this computer's time
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// Another workflow (its id): a run of it that ends as `when` says starts this one, on the same ticket and folder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<AfterWhen>,
+    /// Started by a POST to `/v1/workflows/<id>/start` on the local API, with the API token
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub webhook: bool,
+    /// The repository the run works in (a schedule or a webhook): it has no Jira ticket
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// What the run is asked (`{{ request }}`); after another workflow, that run's request when left out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+}
+
+/// A schedule's cron expression, read.
+pub fn cron(expression: &str) -> Result<croner::Cron, String> {
+    if expression.split_whitespace().count() != 5 {
+        return Err(format!("The schedule \"{expression}\" needs five fields: minute hour day month weekday"));
+    }
+    croner::Cron::new(expression).parse().map_err(|e| format!("The schedule \"{expression}\" can't be read: {e}"))
+}
+
+/// Checks a trigger and tidies it (trimmed, empty text left out).
+fn check_trigger(workflow: &str, for_requests: bool, t: &Trigger) -> Result<Trigger, String> {
+    let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let t = Trigger {
+        schedule: text(&t.schedule),
+        after: text(&t.after),
+        when: t.when,
+        webhook: t.webhook,
+        folder: text(&t.folder),
+        request: text(&t.request),
+    };
+    let kinds = [t.schedule.is_some(), t.after.is_some(), t.webhook].iter().filter(|k| **k).count();
+    if kinds != 1 {
+        return Err("A trigger has one of `schedule`, `after` or `webhook`".into());
+    }
+    if let Some(expression) = &t.schedule {
+        cron(expression)?;
+    }
+    if let Some(after) = &t.after {
+        if !agent::valid_id(after) {
+            return Err(format!("`after: {after}` isn't a workflow id"));
+        }
+        if after == workflow {
+            return Err("A workflow can't start after itself".into());
+        }
+        if t.folder.is_some() {
+            return Err("After another workflow, the run works in that run's folder: leave out `folder`".into());
+        }
+    } else {
+        if t.when.is_some() {
+            return Err("`when` goes with `after`".into());
+        }
+        match &t.folder {
+            None => return Err("A schedule or a webhook needs the `folder` its runs work in".into()),
+            Some(f) if !Path::new(f).is_absolute() => return Err(format!("The folder \"{f}\" must be a full path")),
+            _ => {}
+        }
+    }
+    if for_requests && t.schedule.is_some() && t.request.is_none() {
+        return Err("This workflow runs what it is asked: give its schedule a `request`".into());
+    }
+    Ok(t)
 }
 
 /// A team step as written.
@@ -477,6 +569,9 @@ pub struct Workflow {
     /// The most a team step may use
     #[serde(default)]
     pub team_limits: TeamLimits,
+    /// What else starts it (older runs' snapshots: none)
+    #[serde(default)]
+    pub triggers: Vec<Trigger>,
 }
 
 impl Workflow {
@@ -918,6 +1013,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
     if !(1..=MAX_ASKS).contains(&max_asks) {
         return Err(format!("`colleagues.maxAsks` is from 1 to {MAX_ASKS}"));
     }
+    let triggers = w.triggers.iter().map(|t| check_trigger(id, w.for_requests, t)).collect::<Result<Vec<_>, _>>()?;
     let used = checker.used;
     Ok(Workflow {
         id: id.to_string(),
@@ -932,6 +1028,7 @@ pub fn resolve(id: &str, file: &str, w: FileWorkflow, shared: &BTreeMap<String, 
         // Positions of steps that no longer exist are dropped
         colleagues: Colleagues { can_ask, max_asks },
         team_limits,
+        triggers,
         layout: w.layout.into_iter().filter(|(k, _)| k == "$trigger" || k == "$end" || checker_seen(&steps, k)).collect(),
         steps,
     })
@@ -1114,6 +1211,7 @@ steps:
             layout: BTreeMap::new(),
             colleagues: None,
             team_limits: None,
+            triggers: Vec::new(),
         };
         let again = parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap();
         assert_eq!(serde_json::to_value(&again.steps).unwrap(), serde_json::to_value(&w.steps).unwrap());
@@ -1230,5 +1328,45 @@ board: false").contains("board"));
         let second = load_all(&folder).unwrap();
         assert_eq!((second.workflows.len(), second.problems.len()), (5, 1));
         assert!(second.problems[0].file.ends_with("broken.yaml"));
+    }
+
+    #[test]
+    fn reads_triggers_checks_them_and_writes_them_back() {
+        let head = "name: T\nsteps:\n- id: go\n  agent: planner\ntriggers:\n";
+        let text = format!(
+            "{head}- schedule: ' 0 9 * * 1-5 '\n  folder: C:\\repo\n- after: build\n  when: failed\n  request: Look again\n- webhook: true\n  folder: C:\\repo\n"
+        );
+        let w = parse("t", "t.yaml", &text, &shared()).unwrap();
+        assert_eq!(w.triggers.len(), 3);
+        assert_eq!((w.triggers[0].schedule.as_deref(), w.triggers[0].folder.as_deref()), (Some("0 9 * * 1-5"), Some(r"C:\repo")));
+        assert_eq!((w.triggers[1].after.as_deref(), w.triggers[1].when), (Some("build"), Some(AfterWhen::Failed)));
+        assert!(w.triggers[2].webhook);
+        // Written back as read
+        let file = FileWorkflow {
+            name: w.name.clone(),
+            description: String::new(),
+            offer_in_tracket: false,
+            for_requests: false,
+            max_parallel_runs: 1,
+            board: true,
+            agents: BTreeMap::new(),
+            steps: w.steps.iter().map(Step::to_file).collect(),
+            layout: BTreeMap::new(),
+            colleagues: None,
+            team_limits: None,
+            triggers: w.triggers.clone(),
+        };
+        assert_eq!(parse("t", "t.yaml", &serde_yaml::to_string(&file).unwrap(), &shared()).unwrap().triggers, w.triggers);
+
+        let bad = |trigger: &str| parse("t", "t.yaml", &format!("{head}{trigger}"), &shared()).unwrap_err();
+        assert!(bad("- schedule: 0 9 * *\n  folder: C:\\repo\n").contains("five fields"));
+        assert!(bad("- schedule: 0 9 * * *\n").contains("needs the `folder`"));
+        assert!(bad("- schedule: 0 9 * * *\n  after: x\n  folder: C:\\repo\n").contains("one of"));
+        assert!(bad("- after: t\n").contains("after itself"));
+        assert!(bad("- after: build\n  folder: C:\\repo\n").contains("leave out `folder`"));
+        assert!(bad("- webhook: true\n  folder: repo\n").contains("full path"));
+        assert!(bad("- webhook: true\n  folder: C:\\repo\n  when: passed\n").contains("`when` goes with `after`"));
+        let asks = "name: T\nforRequests: true\nsteps:\n- id: go\n  agent: planner\ntriggers:\n- schedule: 0 9 * * *\n  folder: C:\\repo\n";
+        assert!(parse("t", "t.yaml", asks, &shared()).unwrap_err().contains("give its schedule a `request`"));
     }
 }

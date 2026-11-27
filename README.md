@@ -26,6 +26,18 @@ Windows only for now.
     Tracket's Start working makes (`<repo>/.claude/worktrees/<KEY>`, on a branch named after the key, from origin's
     default branch), made when missing. That run then has its own row in Tracket. At the launched workflow's limit
     of runs at once, the step waits for room instead of failing.
+  - **Triggers.** Besides Tracket, a workflow starts with Run now (its Start node in Workflows, or Start a run in
+    Runs) and, by itself, from the `triggers` in its file:
+    - `schedule: 0 9 * * 1-5` (five cron fields, this computer's time) with a `folder` and an optional `request`.
+      Schedules run while Sprocket is open, in the tray too; a time missed while it was closed is skipped.
+    - `after: <workflow>` (with `when: passed`, `failed` or `ended`): when a run of that workflow ends so, this one
+      starts on its ticket and in its folder. Only runs started from outside count, and a chain that would come back
+      to a workflow stops there.
+    - `webhook: true` with a `folder`: a `POST /v1/workflows/<id>/start` on the local API, with the API token, starts
+      it; the body `{"request": "…"}` is optional. The folder is always the trigger's, never the caller's.
+
+    A run from a schedule, a webhook or Run now may have no Jira ticket: it works in the repository folder itself
+    (not a worktree), Tracket doesn't list it, and a comment or status action on the ticket fails.
   - An approval step waits until someone approves it. Rejecting it can send the run back to an earlier step
     (`onReject`), with the reason passed to the agent.
   - An agent whose policy asks before a tool call waits for an answer. The answer goes back to the agent.
