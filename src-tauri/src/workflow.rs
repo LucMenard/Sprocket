@@ -15,6 +15,12 @@ use crate::expr;
 pub const EXAMPLE: (&str, &str) = ("fix-a-bug.yaml", include_str!("../../workflows/fix-a-bug.yaml"));
 /// The workflow Tracket's "Ask an agent" uses, also written into an empty folder.
 pub const ASK_EXAMPLE: (&str, &str) = ("ask-an-agent.yaml", include_str!("../../workflows/ask-an-agent.yaml"));
+/// More examples for an empty folder, built on the shared example agents.
+const MORE_EXAMPLES: [(&str, &str); 3] = [
+    ("build-a-feature.yaml", include_str!("../../workflows/build-a-feature.yaml")),
+    ("review-a-change.yaml", include_str!("../../workflows/review-a-change.yaml")),
+    ("design-a-feature.yaml", include_str!("../../workflows/design-a-feature.yaml")),
+];
 
 // ---- The file as written ----
 
@@ -902,6 +908,9 @@ pub fn load_all(dir: &Path) -> std::io::Result<WorkflowList> {
         std::fs::create_dir_all(dir)?;
         std::fs::write(dir.join(EXAMPLE.0), EXAMPLE.1)?;
         std::fs::write(dir.join(ASK_EXAMPLE.0), ASK_EXAMPLE.1)?;
+        for (name, text) in MORE_EXAMPLES {
+            std::fs::write(dir.join(name), text)?;
+        }
     }
     let mut list = WorkflowList::default();
     for path in files(dir)? {
@@ -933,11 +942,33 @@ mod tests {
         assert_eq!(w.name, "Fix a bug");
         assert!(w.offer_in_tracket);
         let kinds: Vec<_> = w.steps.iter().map(|s| (s.id.as_str(), s.kind)).collect();
-        assert_eq!(kinds, [("plan", StepKind::Agent), ("approve", StepKind::Approval), ("build", StepKind::Agent)]);
+        assert_eq!(
+            kinds,
+            [
+                ("plan", StepKind::Agent),
+                ("approve", StepKind::Approval),
+                ("fix", StepKind::Agent),
+                ("review", StepKind::Agent),
+                ("blocked", StepKind::Condition)
+            ]
+        );
         assert_eq!(w.steps[1].on_reject.as_deref(), Some("plan"));
-        let builder = w.agents.iter().find(|a| a.id == "builder").unwrap();
-        assert_eq!((builder.ask, builder.shared), (AskPolicy::BeforeWrites, true));
+        let fixer = w.agents.iter().find(|a| a.id == "fixer").unwrap();
+        assert_eq!((fixer.ask, fixer.shared), (AskPolicy::BeforeWrites, true));
         assert_eq!(w.agents.iter().find(|a| a.id == "planner").unwrap().mcp, ["Atlassian2"]);
+    }
+
+    #[test]
+    fn every_example_parses_with_the_shared_agents() {
+        let shared = shared();
+        for (name, text) in [EXAMPLE, ASK_EXAMPLE].into_iter().chain(MORE_EXAMPLES) {
+            let id = name.trim_end_matches(".yaml");
+            parse(id, name, text, &shared).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let list = load_all(&tempdir.path().join("workflows")).unwrap();
+        assert!(list.problems.is_empty(), "{:?}", list.problems.iter().map(|p| &p.message).collect::<Vec<_>>());
+        assert_eq!(list.workflows.len(), 5);
     }
 
     #[test]
@@ -1125,13 +1156,13 @@ board: false").contains("board"));
         let folder = dir.path().join("workflows");
         let first = load_all(&folder).unwrap();
         let ids: Vec<_> = first.workflows.iter().map(|w| w.id.as_str()).collect();
-        assert_eq!(ids, ["ask-an-agent", "fix-a-bug"]);
+        assert_eq!(ids, ["ask-an-agent", "build-a-feature", "design-a-feature", "fix-a-bug", "review-a-change"]);
         assert!(first.workflows[0].for_requests);
         assert!(dir.path().join("agents").join("planner.yaml").exists());
 
         std::fs::write(folder.join("broken.yaml"), "name: [").unwrap();
         let second = load_all(&folder).unwrap();
-        assert_eq!((second.workflows.len(), second.problems.len()), (2, 1));
+        assert_eq!((second.workflows.len(), second.problems.len()), (5, 1));
         assert!(second.problems[0].file.ends_with("broken.yaml"));
     }
 }

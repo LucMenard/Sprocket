@@ -38,10 +38,29 @@ struct World {
     _dir: tempfile::TempDir,
 }
 
+const PLAN_APPROVE_BUILD: &str = "name: Fix a bug
+offerInTracket: true
+maxParallelRuns: 2
+steps:
+- id: plan
+  agent: planner
+  instructions: Read the ticket and the code it concerns, then write a short plan. Do not change any file.
+- id: approve
+  approval:
+    summary: steps.plan.output
+  onReject: plan
+- id: build
+  agent: builder
+  input: steps.plan.output
+  instructions: Implement the plan, run the tests, push a branch named after the ticket and open a draft PR.
+";
+
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let workflows = dir.path().join("workflows");
-    workflow::load_all(&workflows).unwrap(); // writes the example: plan → approve → build
+    workflow::load_all(&workflows).unwrap(); // writes the examples and the shared agents
+    // The tests drive a fixed plan → approve → build, whatever the shipped example becomes
+    std::fs::write(workflows.join("fix-a-bug.yaml"), PLAN_APPROVE_BUILD).unwrap();
     let fake = Arc::new(Fake::default());
     let db = Db::open(&dir.path().join("sprocket.sqlite")).unwrap();
     let engine = Engine::new(db, Box::new(FakeSink(fake.clone())), workflows);

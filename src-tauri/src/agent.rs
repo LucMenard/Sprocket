@@ -7,11 +7,23 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The examples written into a new agents folder, the same agents as the example workflow's.
-const EXAMPLES: [(&str, &str); 3] = [
+/// The examples written into a new agents folder: the example workflow's agents first, then a set for development,
+/// review and design.
+const EXAMPLES: [(&str, &str); 11] = [
     ("planner.yaml", include_str!("../../agents/planner.yaml")),
     ("builder.yaml", include_str!("../../agents/builder.yaml")),
     ("notifier.yaml", include_str!("../../agents/notifier.yaml")),
+    // Development
+    ("fixer.yaml", include_str!("../../agents/fixer.yaml")),
+    ("test-writer.yaml", include_str!("../../agents/test-writer.yaml")),
+    ("doc-writer.yaml", include_str!("../../agents/doc-writer.yaml")),
+    // Review
+    ("code-reviewer.yaml", include_str!("../../agents/code-reviewer.yaml")),
+    ("security-reviewer.yaml", include_str!("../../agents/security-reviewer.yaml")),
+    // Design
+    ("architect.yaml", include_str!("../../agents/architect.yaml")),
+    ("ui-designer.yaml", include_str!("../../agents/ui-designer.yaml")),
+    ("researcher.yaml", include_str!("../../agents/researcher.yaml")),
 ];
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]

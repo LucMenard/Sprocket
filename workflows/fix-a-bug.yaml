@@ -1,5 +1,5 @@
 name: Fix a bug
-description: Plan the fix, get your approval, implement it and open a draft PR.
+description: Plan the fix, get your approval, fix it with a draft PR, review it and fix what blocks.
 offerInTracket: true
 maxParallelRuns: 2
 steps:
@@ -10,7 +10,19 @@ steps:
   approval:
     summary: steps.plan.output
   onReject: plan
-- id: build
-  agent: builder
+- id: fix
+  agent: fixer
   input: steps.plan.output
-  instructions: Implement the plan, run the tests, push a branch named after the ticket and open a draft PR.
+  instructions: Fix the bug as planned, add a test that fails without the fix, run the tests, push a branch named after the ticket and open a draft PR.
+- id: review
+  agent: code-reviewer
+  input: steps.fix.output
+  instructions: Review the branch's changes against the main branch.
+  output: { blocking: number, findings: text }
+- id: blocked
+  if: steps.review.output.blocking > 0
+  then:
+  - id: refix
+    agent: fixer
+    input: steps.review.output.findings
+    instructions: Fix the blocking findings of this review, run the tests, and push the fix to the PR's branch.
